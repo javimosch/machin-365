@@ -165,6 +165,15 @@ func cmd_install(a) (code) {
     return 1
 }
 
+// ensure_service starts the local bkn when it is installed but not running,
+// so suite apps get the bkn backend without a manual `service start`.
+// Silent no-op when no bkn is installed — apps then use their own fallback.
+func ensure_service() {
+    if file_size(bkn_bin()) == 0 { return }
+    if service_running() { return }
+    cmd_service_start()
+}
+
 func cmd_run(a) (code) {
     code = 0
     id := ""
@@ -177,6 +186,7 @@ func cmd_run(a) (code) {
         eprintln("usage: machin-365 run <app-id> [args...]")
         return 2
     }
+    ensure_service()
     r := load_registry()
     t, found := find_installed(r, id)
     if !found {

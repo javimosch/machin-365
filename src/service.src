@@ -59,15 +59,17 @@ func service_running() {
 }
 
 func cmd_service_start() {
-    if service_running() {
-        println("bkn already running at " + local_url())
-        return
-    }
     c := load_config()
     if c.local_token == "" {
         // 32 hex chars of randomness is enough for a loopback admin token.
         c.local_token = to_hex(rand_bytes(16))
-        save_config(c)
+    }
+    // persist port+token — apps discover the endpoint via config.json
+    c.local_port = bkn_port()
+    save_config(c)
+    if service_running() {
+        println("bkn already running at " + local_url())
+        return
     }
     system("mkdir -p '" + suite_home() + "/bkn'")
     cmd := "BKN_DATA='" + bkn_db() + "' BKN_PORT=" + str(bkn_port()) +
