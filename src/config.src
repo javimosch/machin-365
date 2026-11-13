@@ -8,10 +8,12 @@ type SuiteConfig struct {
     refresh_token string
     email string
     org string
+    local_port int
+    local_token string
 }
 
 func load_config() (c) {
-    c = SuiteConfig{server: "", token: "", refresh_token: "", email: "", org: ""}
+    c = SuiteConfig{server: "", token: "", refresh_token: "", email: "", org: "", local_port: 0, local_token: ""}
     s := read_file(config_path())
     if s == "" { return c }
     return parse(s, SuiteConfig{})

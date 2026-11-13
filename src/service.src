@@ -1,0 +1,114 @@
+// service.src — the suite-managed local bkn instance.
+// One bkn per suite home: binary in bin/, database in bkn/, pid in
+// bkn/bkn.pid, log in bkn/bkn.log. Port and admin token live in config.json.
+// Default port 17630; BKN_PORT-style override via MACHIN_365_BKN_PORT.
+
+func bkn_bin() { return suite_home() + "/bin/bkn" }
+func bkn_db() { return suite_home() + "/bkn/bkn.db" }
+func bkn_pidfile() { return suite_home() + "/bkn/bkn.pid" }
+func bkn_log() { return suite_home() + "/bkn/bkn.log" }
+
+func bkn_port() {
+    p := env("MACHIN_365_BKN_PORT")
+    if p != "" { return parse_int(p) }
+    c := load_config()
+    if c.local_port != 0 { return c.local_port }
+    return 17630
+}
+
+func local_url() { return "http://127.0.0.1:" + str(bkn_port()) }
+
+func find_bkn() {
+    // --bin path wins, then PATH lookup, then an existing suite install.
+    p := env("MACHIN_BKN_BIN")
+    if p != "" { return p }
+    _, out, _ := exec("command -v bkn 2>/dev/null || command -v mbkn 2>/dev/null")
+    if trim(out) != "" { return trim(out) }
+    if file_size(bkn_bin()) > 0 { return bkn_bin() }
+    return ""
+}
+
+func cmd_service_install(a) (code) {
+    code = 0
+    src := ""
+    i := 2
+    while i < len(a) {
+        if a[i] == "--bin" && i+1 < len(a) { src = a[i+1]  i = i + 2  continue }
+        i = i + 1
+    }
+    if src == "" { src = find_bkn() }
+    if src == "" {
+        eprintln("machin-365: no bkn binary found — pass --bin /path/to/bkn")
+        return 1
+    }
+    system("mkdir -p '" + suite_home() + "/bin' '" + suite_home() + "/bkn'")
+    b := read_file_bytes(src)
+    if len(b) == 0 {
+        eprintln("machin-365: cannot read " + src)
+        return 1
+    }
+    write_file_bytes(bkn_bin(), b)
+    system("chmod +x '" + bkn_bin() + "'")
+    println("installed bkn → " + bkn_bin())
+    return code
+}
+
+func service_running() {
+    st, _, _ := http_get(local_url() + "/_health")
+    return st == 200
+}
+
+func cmd_service_start() {
+    if service_running() {
+        println("bkn already running at " + local_url())
+        return
+    }
+    c := load_config()
+    if c.local_token == "" {
+        // 32 hex chars of randomness is enough for a loopback admin token.
+        c.local_token = to_hex(rand_bytes(16))
+        save_config(c)
+    }
+    system("mkdir -p '" + suite_home() + "/bkn'")
+    cmd := "BKN_DATA='" + bkn_db() + "' BKN_PORT=" + str(bkn_port()) +
+        " BKN_ADMIN_TOKEN='" + c.local_token + "' '" + bkn_bin() + "' serve" +
+        " >'" + bkn_log() + "' 2>&1 & echo $!"
+    _, out, err := exec(cmd)
+    if err != "" {
+        eprintln("machin-365: service start failed: " + err)
+        return
+    }
+    pid := trim(out)
+    write_file(bkn_pidfile(), pid + "\n")
+    // wait for health (max ~3s)
+    i := 0
+    while i < 30 {
+        if service_running() {
+            println("bkn running at " + local_url() + " (pid " + pid + ")")
+            return
+        }
+        sleep(100)
+        i = i + 1
+    }
+    eprintln("machin-365: bkn did not come up — see " + bkn_log())
+}
+
+func cmd_service_stop() {
+    pid := trim(read_file(bkn_pidfile()))
+    if pid == "" {
+        eprintln("machin-365: no pidfile — is the service running?")
+        return
+    }
+    system("kill " + pid)
+    remove(bkn_pidfile())
+    println("stopped bkn (pid " + pid + ")")
+}
+
+func cmd_service_status() {
+    if service_running() {
+        println("bkn: running at " + local_url())
+        println("db:  " + bkn_db())
+    } else {
+        println("bkn: not running")
+    }
+}

@@ -26,15 +26,31 @@ machin-365 run tasks                # launch (also in your OS app menu)
 machin-365 auth login --server URL --email E --password P [--org SLUG]
 machin-365 auth status | logout
 machin-365 config                   # paths + account state
+machin-365 service install --bin ./bkn   # install local bkn binary
+machin-365 service start|stop|status     # manage local bkn (127.0.0.1:17630)
+machin-365 sync                     # replicate local bkn <-> remote bkn
 ```
+
+## Local-first data layer
+
+`service *` runs a suite-managed **local bkn** — the default backend every app
+talks to, so apps work fully offline and cannot tell whether a remote server
+exists. `sync` then replicates all store collections between the local and the
+remote bkn configured via `auth login`.
+
+Replication is one pass per invocation, last-writer-wins on an app-level
+`_mtime` field (POST upserts by record id). **Deletes are not propagated yet** —
+don't delete synced docs until tombstones land.
 
 ## Layout
 
 ```
 $MACHIN_365_HOME (default ~/.local/share/machin-365)
 ├── apps/<id>/bin/     installed app binaries
+├── bin/bkn            local bkn binary
+├── bkn/bkn.db         local bkn database (+ bkn.pid, bkn.log)
 ├── data/<id>/         each app's local store (SQLite etc.)
-├── config.json        server URL + auth tokens
+├── config.json        server URL + auth tokens + local bkn token
 ├── catalog.json       last-used catalog snapshot
 └── installed.json     id → version/bin registry
 ```
@@ -51,9 +67,11 @@ overrides it — that is also the seam a server-hosted catalog will use.
 
 ## Roadmap
 
-- **Now**: CLI install/run/auth, desktop apps only, local data
-- **Next**: per-app sync engine over machin-bkn (local outbox ⇄ server events),
-  tenant provisioning + quotas on the demo server, server-hosted catalog
+- **Now**: CLI install/run/auth, local bkn lifecycle (`service *`),
+  one-pass LWW replication (`sync`), desktop apps only
+- **Next**: tasks app on the local bkn HTTP API, delete tombstones,
+  sync loop/daemon mode, tenant provisioning + quotas on the demo server,
+  server-hosted catalog
 - **Later**: web/PWA app flavors, desktop launcher shell, `machin-365 update`
 
 ## License

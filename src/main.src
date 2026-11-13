@@ -43,6 +43,15 @@ func dispatch(a) (code) {
         return 2
     }
     if cmd == "config" { cmd_config()  return code }
+    if cmd == "service" {
+        if len(a) > 2 && a[2] == "install" { return cmd_service_install(a) }
+        if len(a) > 2 && a[2] == "start" { cmd_service_start()  return code }
+        if len(a) > 2 && a[2] == "stop" { cmd_service_stop()  return code }
+        if len(a) > 2 && a[2] == "status" { cmd_service_status()  return code }
+        eprintln("usage: machin-365 service <install|start|stop|status>")
+        return 2
+    }
+    if cmd == "sync" { return cmd_sync(a) }
     if cmd == "help" || cmd == "--help" || cmd == "-h" { print_usage()  return code }
     eprintln("machin-365: unknown command '" + cmd + "'")
     print_usage()
