@@ -1,0 +1,60 @@
+// main.src — entry point. argv[0] is the program name; the command is argv[1].
+
+func cmd_config() {
+    c := load_config()
+    println("home:    " + suite_home())
+    println("server:  " + c.server)
+    println("email:   " + c.email)
+    println("org:     " + c.org)
+    if c.token != "" {
+        println("token:   present")
+    } else {
+        println("token:   none")
+    }
+}
+
+func cmd_init() {
+    system("mkdir -p '" + suite_home() + "' '" + apps_dir() + "' '" + data_root() + "' '" + desktop_dir() + "'")
+    p := config_path()
+    s := read_file(p)
+    if s == "" {
+        save_config(load_config())
+        println("initialized " + suite_home())
+    } else {
+        println("already initialized: " + suite_home())
+    }
+    println("")
+    println("next: machin-365 catalog   — see available apps")
+    println("      machin-365 auth login --server URL --email E --password P")
+}
+
+func dispatch(a) (code) {
+    code = 0
+    cmd := a[1]
+    if cmd == "init" { cmd_init()  return code }
+    if cmd == "catalog" || cmd == "apps" { cmd_catalog()  return code }
+    if cmd == "install" { return cmd_install(a) }
+    if cmd == "run" { return cmd_run(a) }
+    if cmd == "auth" {
+        if len(a) > 2 && a[2] == "login" { return cmd_auth_login(a) }
+        if len(a) > 2 && a[2] == "status" { cmd_auth_status()  return code }
+        if len(a) > 2 && a[2] == "logout" { cmd_auth_logout()  return code }
+        eprintln("usage: machin-365 auth <login|status|logout>")
+        return 2
+    }
+    if cmd == "config" { cmd_config()  return code }
+    if cmd == "help" || cmd == "--help" || cmd == "-h" { print_usage()  return code }
+    eprintln("machin-365: unknown command '" + cmd + "'")
+    print_usage()
+    return 2
+}
+
+func main() {
+    a := args()
+    if len(a) < 2 {
+        print_usage()
+        exit(2)
+    }
+    code := dispatch(a)
+    if code != 0 { exit(code) }
+}

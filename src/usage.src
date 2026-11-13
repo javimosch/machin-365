@@ -1,0 +1,25 @@
+// usage.src — help text. stdout for the command list, stderr-free so the
+// whole block is safe to pipe; exit code 2 on no/unknown command.
+
+func print_usage() {
+    println("machin-365 — the Machin app suite")
+    println("")
+    println("usage: machin-365 <command> [args]")
+    println("")
+    println("commands:")
+    println("  init                          create suite dirs + default config")
+    println("  catalog                       list apps in the catalog and install state")
+    println("  install <id> [--bin PATH]     install an app (release asset or local binary)")
+    println("  run <id> [args...]            run an installed app")
+    println("  auth login --server URL --email E --password P [--org SLUG]")
+    println("  auth status                   show server/account/token state")
+    println("  auth logout                   clear stored tokens")
+    println("  config                        show suite paths and account state")
+    println("")
+    println("env:")
+    println("  MACHIN_365_HOME    suite home (default ~/.local/share/machin-365)")
+    println("  MACHIN_365_CATALOG override catalog.json path")
+    println("")
+    println("apps are offline-first; server sync lands per-app once a")
+    println("machin-bkn server is configured via `auth login`.")
+}

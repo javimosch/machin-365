@@ -1,0 +1,44 @@
+// catalog.src — the app catalog: what the suite can install.
+// The bundled copy is generated from catalog.json at build time
+// (catalog_gen.src, gitignored). MACHIN_365_CATALOG points at a JSON file
+// to override — that is also the seam a server-hosted catalog plugs into.
+
+type Asset struct { platform string  url string  sha256 string }
+type CatApp struct {
+    id string
+    name string
+    kind string
+    repo string
+    version string
+    bin string
+    desc string
+    assets []Asset
+}
+type Catalog struct {
+    suite_version int
+    server_default string
+    apps []CatApp
+}
+
+func catalog_text() {
+    p := env("MACHIN_365_CATALOG")
+    if p != "" { return read_file(p) }
+    return catalog_json()
+}
+
+func load_catalog() { return parse(catalog_text(), Catalog{}) }
+
+func find_app(cat, id) (a, found) {
+    a = CatApp{id: "", name: "", kind: "", repo: "", version: "", bin: "", desc: "", assets: []Asset{}}
+    found = false
+    i := 0
+    while i < len(cat.apps) {
+        if cat.apps[i].id == id {
+            a = cat.apps[i]
+            found = true
+            return
+        }
+        i = i + 1
+    }
+    return
+}

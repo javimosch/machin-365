@@ -1,0 +1,208 @@
+// install.src — install, run and registry for suite apps.
+// Layout per app:  apps/<id>/bin/<bin>   (the binary)
+//                  data/<id>/            (the app's own local store)
+// installed.json records id → {version, bin path, installed_at}.
+
+type Installed struct {
+    id string
+    version string
+    bin string
+    installed_at string
+}
+type InstallRegistry struct { apps []Installed }
+
+func load_registry() {
+    r := InstallRegistry{apps: []Installed{}}
+    s := read_file(installed_path())
+    if s == "" { return r }
+    return parse(s, InstallRegistry{})
+}
+
+func save_registry(r) {
+    system("mkdir -p '" + suite_home() + "'")
+    write_file(installed_path(), json(r))
+}
+
+func find_installed(r, id) (t, found) {
+    t = Installed{id: "", version: "", bin: "", installed_at: ""}
+    found = false
+    i := 0
+    while i < len(r.apps) {
+        if r.apps[i].id == id {
+            t = r.apps[i]
+            found = true
+            return
+        }
+        i = i + 1
+    }
+    return
+}
+
+func upsert_installed(r, t) {
+    i := 0
+    while i < len(r.apps) {
+        if r.apps[i].id == t.id {
+            r.apps[i] = t
+            return r
+        }
+        i = i + 1
+    }
+    r.apps = append(r.apps, t)
+    return r
+}
+
+// platform maps uname to catalog asset keys: linux-amd64, darwin-arm64, …
+func platform() {
+    _, o, _ := exec("uname -s")
+    s := to_lower(trim(o))
+    _, m, _ := exec("uname -m")
+    mm := to_lower(trim(m))
+    if mm == "x86_64" { mm = "amd64" }
+    if mm == "aarch64" { mm = "arm64" }
+    if s == "darwin" { return "darwin-" + mm }
+    return "linux-" + mm
+}
+
+func write_desktop_file(id, app, bin) {
+    d := desktop_dir()
+    system("mkdir -p '" + d + "'")
+    body := "[Desktop Entry]\n"
+    body = body + "Type=Application\n"
+    body = body + "Name=" + app.name + "\n"
+    body = body + "Comment=" + app.desc + "\n"
+    body = body + "Exec=" + bin + "\n"
+    body = body + "Icon=applications-science\n"
+    body = body + "Categories=Office;\n"
+    body = body + "Terminal=false\n"
+    write_file(d + "/machin-365-" + id + ".desktop", body)
+}
+
+func install_bin(id, app, src) (code) {
+    code = 0
+    dst := app_bin_dir(id) + "/" + app.bin
+    system("mkdir -p '" + app_bin_dir(id) + "'")
+    b := read_file_bytes(src)
+    if len(b) == 0 {
+        eprintln("machin-365: cannot read " + src)
+        return 1
+    }
+    write_file_bytes(dst, b)
+    system("chmod +x '" + dst + "'")
+    reg := load_registry()
+    reg = upsert_installed(reg, Installed{id: id, version: app.version, bin: dst, installed_at: str(now_ms())})
+    save_registry(reg)
+    write_desktop_file(id, app, dst)
+    println("installed " + app.name + " " + app.version + " → " + dst)
+    return code
+}
+
+func install_asset(id, app, asset) (code) {
+    code = 0
+    tmp := suite_home() + "/.dl-" + id
+    system("mkdir -p '" + suite_home() + "'")
+    dc, _, _ := exec("curl -fsSL '" + asset.url + "' -o '" + tmp + "'")
+    if dc != 0 {
+        eprintln("machin-365: download failed for " + id + " (curl exit " + str(dc) + ")")
+        return 1
+    }
+    if asset.sha256 != "" {
+        sum := to_hex(sha256_bytes(read_file_bytes(tmp)))
+        if sum != asset.sha256 {
+            remove(tmp)
+            eprintln("machin-365: sha256 mismatch for " + id + " — refusing to install")
+            return 1
+        }
+    }
+    dst := app_bin_dir(id) + "/" + app.bin
+    system("mkdir -p '" + app_bin_dir(id) + "'")
+    system("mv -f '" + tmp + "' '" + dst + "'")
+    system("chmod +x '" + dst + "'")
+    reg := load_registry()
+    reg = upsert_installed(reg, Installed{id: id, version: app.version, bin: dst, installed_at: str(now_ms())})
+    save_registry(reg)
+    write_desktop_file(id, app, dst)
+    println("installed " + app.name + " " + app.version + " → " + dst)
+    return code
+}
+
+func cmd_install(a) (code) {
+    code = 0
+    id := ""
+    binpath := ""
+    i := 2
+    while i < len(a) {
+        if a[i] == "--bin" && i+1 < len(a) {
+            binpath = a[i+1]
+            i = i + 2
+            continue
+        }
+        if id == "" { id = a[i] }
+        i = i + 1
+    }
+    if id == "" {
+        eprintln("usage: machin-365 install <app-id> [--bin /path/to/binary]")
+        return 2
+    }
+    cat := load_catalog()
+    app, found := find_app(cat, id)
+    if !found {
+        eprintln("machin-365: unknown app '" + id + "' — see: machin-365 catalog")
+        return 1
+    }
+    if binpath != "" { return install_bin(id, app, binpath) }
+
+    want := platform()
+    j := 0
+    while j < len(app.assets) {
+        if app.assets[j].platform == want {
+            return install_asset(id, app, app.assets[j])
+        }
+        j = j + 1
+    }
+    eprintln("machin-365: no release asset for " + want + " — build from source")
+    eprintln("  git clone " + app.repo + " && ./build.sh")
+    eprintln("  then: machin-365 install " + id + " --bin ./build/" + app.bin)
+    return 1
+}
+
+func cmd_run(a) (code) {
+    code = 0
+    id := ""
+    i := 2
+    while i < len(a) {
+        if id == "" { id = a[i] }
+        i = i + 1
+    }
+    if id == "" {
+        eprintln("usage: machin-365 run <app-id> [args...]")
+        return 2
+    }
+    r := load_registry()
+    t, found := find_installed(r, id)
+    if !found {
+        eprintln("machin-365: '" + id + "' is not installed — run: machin-365 install " + id)
+        return 1
+    }
+    rest := ""
+    j := 3
+    while j < len(a) {
+        rest = rest + " " + a[j]
+        j = j + 1
+    }
+    dc, _, _ := exec(t.bin + rest)
+    return dc
+}
+
+func cmd_catalog() {
+    cat := load_catalog()
+    r := load_registry()
+    i := 0
+    while i < len(cat.apps) {
+        app := cat.apps[i]
+        t, inst := find_installed(r, app.id)
+        state := "available"
+        if inst { state = "installed " + t.version }
+        println(app.id + "\t" + app.name + "\t" + app.kind + "\t" + state + "\t" + app.desc)
+        i = i + 1
+    }
+}

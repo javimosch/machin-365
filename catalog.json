@@ -1,0 +1,16 @@
+{
+  "suite_version": 1,
+  "server_default": "",
+  "apps": [
+    {
+      "id": "tasks",
+      "name": "Tasks",
+      "kind": "desktop",
+      "repo": "javimosch/machin-tasks",
+      "version": "0.1.0",
+      "bin": "machin-tasks",
+      "desc": "Get-things-done task list - offline-first, syncs when a server is configured",
+      "assets": []
+    }
+  ]
+}

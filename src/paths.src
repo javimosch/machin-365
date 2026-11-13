@@ -1,0 +1,26 @@
+// paths.src — suite filesystem layout.
+// MACHIN_365_HOME relocates the whole suite home (apps, data, config,
+// installed registry) — the BKN_HOME pattern: one env var moves everything.
+
+func suite_home() {
+    h := env("MACHIN_365_HOME")
+    if h != "" { return h }
+    return env("HOME") + "/.local/share/machin-365"
+}
+
+func config_path() { return suite_home() + "/config.json" }
+func catalog_path() { return suite_home() + "/catalog.json" }
+func installed_path() { return suite_home() + "/installed.json" }
+func apps_dir() { return suite_home() + "/apps" }
+func data_root() { return suite_home() + "/data" }
+
+func app_dir(id) { return apps_dir() + "/" + id }
+func app_bin_dir(id) { return app_dir(id) + "/bin" }
+
+// desktop_dir is the per-user applications dir — .desktop entries here make
+// installed apps show up in the OS app menu without a custom launcher.
+func desktop_dir() {
+    d := env("XDG_DATA_HOME")
+    if d == "" { d = env("HOME") + "/.local/share" }
+    return d + "/applications"
+}
