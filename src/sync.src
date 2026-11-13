@@ -103,21 +103,41 @@ func push_doc(base, tok, ref, rec) {
     return (st == 200 || st == 201) && err == ""
 }
 
-func cmd_sync(a) (code) {
-    code = 0
-    sync_setup()
-    if sync_remote == "" || sync_remote_tok == "" {
-        eprintln("machin-365: no remote configured — run: auth login --server URL")
-        return 1
-    }
-    if sync_local == "" || sync_local_tok == "" {
-        eprintln("machin-365: no local bkn — run: service install && service start")
-        return 1
-    }
-
-    // union of collection refs from both sides
-    refs := []string{}
+// comma-separated list → refs ("a/b, c/d" tolerates spaces)
+func parse_coll_list(s) (refs) {
+    refs = []string{}
+    cur := ""
     i := 0
+    while i <= len(s) {
+        ch := ","
+        if i < len(s) { ch = substr(s, i, i + 1) }
+        if ch == "," {
+            r := trim(cur)
+            if r != "" { refs = append(refs, r) }
+            cur = ""
+        } else {
+            cur = cur + ch
+        }
+        i = i + 1
+    }
+    return refs
+}
+
+// collection discovery: --collections arg > config.sync_collections >
+// GET /v1/collections (Go bkn only — machin-bkn has no HTTP list route).
+func discover_refs(a) (refs) {
+    refs = []string{}
+    i := 2
+    while i < len(a) {
+        if (a[i] == "--collections" || a[i] == "--coll") && i+1 < len(a) {
+            return parse_coll_list(a[i+1])
+        }
+        i = i + 1
+    }
+    c := load_config()
+    if c.sync_collections != "" { return parse_coll_list(c.sync_collections) }
+    // probe both sides, union what each exposes
+    i = 0
     while i < 2 {
         base := sync_remote
         tok := sync_remote_tok
@@ -135,15 +155,33 @@ func cmd_sync(a) (code) {
         }
         i = i + 1
     }
+    return refs
+}
+
+func cmd_sync(a) (code) {
+    code = 0
+    sync_setup()
+    if sync_remote == "" || sync_remote_tok == "" {
+        eprintln("machin-365: no remote configured — run: auth login --server URL")
+        return 1
+    }
+    if sync_local == "" || sync_local_tok == "" {
+        eprintln("machin-365: no local bkn — run: service install && service start")
+        return 1
+    }
+
+    refs := discover_refs(a)
     if len(refs) == 0 {
-        println("nothing to sync (no collections on either side)")
+        println("nothing to sync — no collections found")
+        println("hint: machin-365 sync --collections ns/coll,ns/coll2")
+        println("      or set sync_collections in config.json")
         return code
     }
 
     pushed := 0
     pulled := 0
     same := 0
-    i = 0
+    i := 0
     while i < len(refs) {
         ref := refs[i]
         lr := fetch_records(sync_local, sync_local_tok, ref)
