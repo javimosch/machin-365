@@ -72,6 +72,121 @@ func cmd_auth_login(a) (code) {
     return code
 }
 
+// default_org_slug derives a unique-ish workspace slug from the email:
+// u-<sanitized local part>-<4 hex>. The suffix keeps collisions rare;
+// callers can always pass --org explicitly.
+func default_org_slug(email) {
+    at := index(email, "@")
+    local := email
+    if at > 0 { local = substr(email, 0, at) }
+    local = to_lower(local)
+    out := ""
+    i := 0
+    while i < len(local) {
+        ch := substr(local, i, i + 1)
+        if (ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9") {
+            out = out + ch
+        } else if ch == "." || ch == "_" || ch == "-" || ch == " " {
+            out = out + "-"
+        }
+        i = i + 1
+    }
+    if out == "" { out = "user" }
+    if len(out) > 24 { out = substr(out, 0, 24) }
+    return "u-" + out + "-" + to_hex(rand_bytes(2))
+}
+
+// auth signup: POST /v1/auth/register (BKN_OPEN_SIGNUP deployments) →
+// POST /v1/auth/orgs (creator becomes owner — the tenant) → login --org
+// for org-scoped tokens. Three calls because register returns unscoped
+// tokens and sync needs the org claim for row-level tenancy.
+func cmd_auth_signup(a) (code) {
+    code = 0
+    server := ""
+    email := ""
+    password := ""
+    name := ""
+    org := ""
+    i := 2
+    while i < len(a) {
+        if a[i] == "--server" && i+1 < len(a) { server = a[i+1]  i = i + 2  continue }
+        if a[i] == "--email" && i+1 < len(a) { email = a[i+1]  i = i + 2  continue }
+        if a[i] == "--password" && i+1 < len(a) { password = a[i+1]  i = i + 2  continue }
+        if a[i] == "--name" && i+1 < len(a) { name = a[i+1]  i = i + 2  continue }
+        if a[i] == "--org" && i+1 < len(a) { org = a[i+1]  i = i + 2  continue }
+        i = i + 1
+    }
+    if server == "" { server = load_config().server }
+    if server == "" {
+        eprintln("machin-365: --server required (e.g. https://bkn.example.com)")
+        return 2
+    }
+    if email == "" || password == "" {
+        eprintln("usage: machin-365 auth signup --server URL --email E --password P [--name N] [--org SLUG]")
+        return 2
+    }
+    server = strip_slash(server)
+    jhdr := []string{"Content-Type: application/json"}
+
+    rbody := "{\"email\":" + json(email) + ",\"password\":" + json(password)
+    if name != "" { rbody = rbody + ",\"name\":" + json(name) }
+    rbody = rbody + "}"
+    st, resp, err := http_request("POST", server + "/v1/auth/register", jhdr, rbody)
+    if err != "" {
+        eprintln("machin-365: signup failed: " + err)
+        return 1
+    }
+    if st != 200 {
+        eprintln("machin-365: signup failed: HTTP " + str(st) + " " + resp)
+        return 1
+    }
+    rr := parse(resp, LoginResp{})
+    if rr.tokens.access_token == "" {
+        eprintln("machin-365: signup response missing access_token")
+        return 1
+    }
+
+    if org == "" { org = default_org_slug(email) }
+    oname := name
+    if oname == "" { oname = org }
+    obody := "{\"slug\":" + json(org) + ",\"name\":" + json(oname) + "}"
+    st, resp, err = http_request("POST", server + "/v1/auth/orgs",
+        []string{"Content-Type: application/json", "Authorization: Bearer " + rr.tokens.access_token}, obody)
+    if err != "" {
+        eprintln("machin-365: org create failed: " + err)
+        return 1
+    }
+    if st != 200 && st != 201 {
+        eprintln("machin-365: org create failed: HTTP " + str(st) + " " + resp)
+        return 1
+    }
+
+    lbody := "{\"email\":" + json(email) + ",\"password\":" + json(password) + ",\"org\":" + json(org) + "}"
+    st, resp, err = http_request("POST", server + "/v1/auth/login", jhdr, lbody)
+    if err != "" {
+        eprintln("machin-365: login failed: " + err)
+        return 1
+    }
+    if st != 200 {
+        eprintln("machin-365: login failed: HTTP " + str(st) + " " + resp)
+        return 1
+    }
+    lr := parse(resp, LoginResp{})
+    if lr.tokens.access_token == "" {
+        eprintln("machin-365: login response missing access_token")
+        return 1
+    }
+    c := load_config()
+    c.server = server
+    c.token = lr.tokens.access_token
+    c.refresh_token = lr.tokens.refresh_token
+    c.email = email
+    c.org = org
+    save_config(c)
+    println("signed up " + email + " → org " + org + " on " + server)
+    return code
+}
+
 func cmd_auth_status() {
     c := load_config()
     if c.server == "" {

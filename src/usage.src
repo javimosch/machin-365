@@ -12,6 +12,7 @@ func print_usage() {
     println("  install <id> [--bin PATH]     install an app (release asset or local binary)")
     println("  run <id> [args...]            run an installed app")
     println("  auth login --server URL --email E --password P [--org SLUG]")
+    println("  auth signup --server URL --email E --password P [--name N] [--org SLUG]")
     println("  auth status                   show server/account/token state")
     println("  auth logout                   clear stored tokens")
     println("  config                        show suite paths and account state")

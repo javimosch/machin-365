@@ -37,9 +37,10 @@ func dispatch(a) (code) {
     if cmd == "run" { return cmd_run(a) }
     if cmd == "auth" {
         if len(a) > 2 && a[2] == "login" { return cmd_auth_login(a) }
+        if len(a) > 2 && a[2] == "signup" { return cmd_auth_signup(a) }
         if len(a) > 2 && a[2] == "status" { cmd_auth_status()  return code }
         if len(a) > 2 && a[2] == "logout" { cmd_auth_logout()  return code }
-        eprintln("usage: machin-365 auth <login|status|logout>")
+        eprintln("usage: machin-365 auth <login|signup|status|logout>")
         return 2
     }
     if cmd == "config" { cmd_config()  return code }
