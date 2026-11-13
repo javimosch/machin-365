@@ -42,6 +42,25 @@ machin-365 sync                     # replicate local bkn <-> remote bkn
 machin-365 sync --watch 15          # continuous replication every 15s
 ```
 
+## Demo server
+
+A shared demo instance is running at `https://machin-bkn.vps1.intrane.fr`
+([machin-bkn](https://github.com/javimosch/machin-bkn)). Try the whole flow:
+
+```sh
+machin-365 auth login --server https://machin-bkn.vps1.intrane.fr \
+    --email demo@machin-365.dev --password machin-365-demo --org demo
+machin-365 catalog --refresh   # when the server hosts /catalog.json
+machin-365 install tasks
+machin-365 service install --bin ./bkn && machin-365 service start
+machin-365 sync --collections m365/tasks   # machin-bkn has no /v1/collections route
+machin-365 run tasks            # add a task, sync, see it on the server
+```
+
+The demo account is shared and throwaway — don't put real data in it. Your
+own server is one `bkn serve` away (self-host), or ask for an account on the
+demo instance.
+
 ## Local-first data layer
 
 `service *` runs a suite-managed **local bkn** — the default backend every app
