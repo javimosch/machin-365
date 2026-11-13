@@ -29,6 +29,7 @@ machin-365 config                   # paths + account state
 machin-365 service install --bin ./bkn   # install local bkn binary
 machin-365 service start|stop|status     # manage local bkn (127.0.0.1:17630)
 machin-365 sync                     # replicate local bkn <-> remote bkn
+machin-365 sync --watch 15          # continuous replication every 15s
 ```
 
 ## Local-first data layer
@@ -38,9 +39,16 @@ talks to, so apps work fully offline and cannot tell whether a remote server
 exists. `sync` then replicates all store collections between the local and the
 remote bkn configured via `auth login`.
 
-Replication is one pass per invocation, last-writer-wins on an app-level
-`_mtime` field (POST upserts by record id). **Deletes are not propagated yet** —
-don't delete synced docs until tombstones land.
+Replication is one pass per invocation (`--watch N` loops every N seconds),
+last-writer-wins on an app-level `_mtime` field (POST upserts by record id).
+
+**Deletes propagate via tombstones**: before deleting a synced doc, the app
+POSTs `{"ref":"ns/coll","id":"...","_mtime":T}` to the `sync/tombstones`
+collection, then DELETEs the record. `sync/tombstones` is itself a synced
+collection, so markers replicate like any doc; a record older than its
+tombstone is deleted on both sides, while a newer `_mtime` (edit after
+delete) wins and the record survives. Apps that skip the tombstone will see
+deletes resurrect — tombstone first, then delete.
 
 ## Layout
 
@@ -68,10 +76,10 @@ overrides it — that is also the seam a server-hosted catalog will use.
 ## Roadmap
 
 - **Now**: CLI install/run/auth, local bkn lifecycle (`service *`),
-  one-pass LWW replication (`sync`), desktop apps only
-- **Next**: tasks app on the local bkn HTTP API, delete tombstones,
-  sync loop/daemon mode, tenant provisioning + quotas on the demo server,
-  server-hosted catalog
+  LWW replication with delete tombstones + `sync --watch`, desktop apps
+  (tasks on local bkn, chat over ws://)
+- **Next**: sync daemon/autostart, chat message persistence, tenant
+  provisioning + quotas on the demo server, server-hosted catalog
 - **Later**: web/PWA app flavors, desktop launcher shell, `machin-365 update`
 
 ## License

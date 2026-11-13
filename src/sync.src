@@ -3,10 +3,15 @@
 // read .id and ._mtime and re-POST the raw object (POST upserts by id).
 //
 // Conflict policy: last-writer-wins on the _mtime field (ms). Sync stamps
-// _mtime on any doc it writes that lacks one. Deletes are NOT propagated
-// yet — a deleted doc simply stops existing on that side; next pass sees
-// it as "only on the other side" and would resurrect it, so callers must
-// not delete synced docs until tombstones land. Documented limitation.
+// _mtime on any doc it writes that lacks one.
+//
+// Deletes DO propagate via tombstones: a deleter POSTs
+// {"ref":"ns/coll","id":"...","_mtime":T} to sync/tombstones, then DELETEs
+// the record. sync/tombstones is itself a synced collection, so tombstones
+// replicate like any doc. A record whose _mtime is older than its tombstone
+// is deleted on both sides; a newer _mtime (edit-after-delete) wins and the
+// record survives. Apps that bypass tombstones will still see deletes
+// resurrect — write the tombstone first, then delete.
 //
 // Endpoints: config.json server/token = remote; local_port/local_token =
 // the service instance. Env overrides win for testing:
@@ -39,6 +44,12 @@ func api_post(base, tok, path, body) {
     st, resp, err := http_request("POST", base + path,
         []string{"Authorization: Bearer " + tok, "Content-Type: application/json"}, body)
     return st, resp, err
+}
+
+func api_delete(base, tok, path) {
+    st, _, err := http_request("DELETE", base + path,
+        []string{"Authorization: Bearer " + tok}, "")
+    return (st == 200 || st == 204) && err == ""
 }
 
 // fetch every record of a collection as raw JSON objects, paginated.
@@ -88,6 +99,13 @@ func rec_id(rec) {
     return parse(v, "")
 }
 
+// string field of a raw record JSON; "" when absent.
+func jstr(rec, path) {
+    v, e := json_get(rec, path)
+    if e != "" { return "" }
+    return parse(v, "")
+}
+
 // find a raw record by id in a fetched list; "" when absent.
 func find_rec(recs, id) {
     i := 0
@@ -101,6 +119,34 @@ func find_rec(recs, id) {
 func push_doc(base, tok, ref, rec) {
     st, _, err := api_post(base, tok, "/v1/store/" + ref, stamp(rec))
     return (st == 200 || st == 201) && err == ""
+}
+
+// collection holding delete markers: {"ref":"ns/coll","id":"...","_mtime":T}
+var sync_tomb_coll = "sync/tombstones"
+
+// tomb map: "ref|id" -> newest tombstone _mtime, from the (just-merged)
+// local sync/tombstones collection.
+func load_tombs() (tm) {
+    tm = make(map[string]int)
+    recs := fetch_records(sync_local, sync_local_tok, sync_tomb_coll)
+    i := 0
+    while i < len(recs) {
+        r := recs[i]
+        ref := jstr(r, ".ref")
+        id := jstr(r, ".id")
+        mt := rec_mtime(r)
+        if ref != "" && id != "" && mt > 0 {
+            k := ref + "|" + id
+            if mt > tm[k] { tm[k] = mt }
+        }
+        i = i + 1
+    }
+    return tm
+}
+
+// true when a tombstone newer than mt exists for ref/id — the record is dead.
+func tomb_wins(tm, ref, id, mt) {
+    return tm[ref + "|" + id] > mt
 }
 
 // comma-separated list → refs ("a/b, c/d" tolerates spaces)
@@ -158,6 +204,100 @@ func discover_refs(a) (refs) {
     return refs
 }
 
+// merge one collection both ways. tm maps "ref|id" -> tombstone _mtime;
+// records older than their tombstone are DELETE'd on their side and then
+// treated as absent, so they cannot resurrect. An empty tm disables
+// tombstone handling (used for the tombstone collection itself).
+func sync_one_ref(ref, tm) {
+    pushed := 0
+    pulled := 0
+    same := 0
+    deleted := 0
+    lr := fetch_records(sync_local, sync_local_tok, ref)
+    rr := fetch_records(sync_remote, sync_remote_tok, ref)
+
+    // pre-delete: any surviving record that loses to a tombstone goes away
+    j := 0
+    while j < len(lr) {
+        r := lr[j]
+        id := rec_id(r)
+        if id != "" && tomb_wins(tm, ref, id, rec_mtime(r)) {
+            if api_delete(sync_local, sync_local_tok, "/v1/store/" + ref + "/" + id) {
+                deleted = deleted + 1
+            }
+        }
+        j = j + 1
+    }
+    j := 0
+    while j < len(rr) {
+        r := rr[j]
+        id := rec_id(r)
+        if id != "" && tomb_wins(tm, ref, id, rec_mtime(r)) {
+            if api_delete(sync_remote, sync_remote_tok, "/v1/store/" + ref + "/" + id) {
+                deleted = deleted + 1
+            }
+        }
+        j = j + 1
+    }
+
+    // merge survivors; tomb-losing records count as absent on their side
+    j := 0
+    while j < len(lr) {
+        lrec := lr[j]
+        id := rec_id(lrec)
+        lm := rec_mtime(lrec)
+        ldead := tomb_wins(tm, ref, id, lm)
+        rrec := find_rec(rr, id)
+        rdead := rrec != "" && tomb_wins(tm, ref, id, rec_mtime(rrec))
+        if !ldead {
+            if rrec == "" || rdead {
+                // local-only (or remote copy dead) → push
+                if push_doc(sync_remote, sync_remote_tok, ref, lrec) { pushed = pushed + 1 }
+            } else {
+                rm := rec_mtime(rrec)
+                if lm > rm {
+                    if push_doc(sync_remote, sync_remote_tok, ref, lrec) { pushed = pushed + 1 }
+                } else if rm > lm {
+                    if push_doc(sync_local, sync_local_tok, ref, rrec) { pulled = pulled + 1 }
+                } else {
+                    same = same + 1
+                }
+            }
+        }
+        j = j + 1
+    }
+    // remote-only (or local-dead) docs → pull
+    j := 0
+    while j < len(rr) {
+        rrec := rr[j]
+        id := rec_id(rrec)
+        if !tomb_wins(tm, ref, id, rec_mtime(rrec)) {
+            lrec := find_rec(lr, id)
+            lhas := lrec != "" && !tomb_wins(tm, ref, id, rec_mtime(lrec))
+            if !lhas {
+                if push_doc(sync_local, sync_local_tok, ref, rrec) { pulled = pulled + 1 }
+            }
+        }
+        j = j + 1
+    }
+    println(ref + ": pushed=" + str(pushed) + " pulled=" + str(pulled) +
+        " deleted=" + str(deleted) + " same=" + str(same) +
+        " local=" + str(len(lr)) + " remote=" + str(len(rr)))
+}
+
+// one full replication pass: tombstones merge first so delete decisions
+// use converged state, then every configured collection.
+func sync_pass(refs) {
+    empty := make(map[string]int)
+    sync_one_ref(sync_tomb_coll, empty)
+    tm := load_tombs()
+    i := 0
+    while i < len(refs) {
+        if refs[i] != sync_tomb_coll { sync_one_ref(refs[i], tm) }
+        i = i + 1
+    }
+}
+
 func cmd_sync(a) (code) {
     code = 0
     sync_setup()
@@ -170,6 +310,19 @@ func cmd_sync(a) (code) {
         return 1
     }
 
+    watch := 0
+    i := 2
+    while i < len(a) {
+        if a[i] == "--watch" {
+            watch = 15
+            if i + 1 < len(a) {
+                n := parse_int(a[i + 1])
+                if n > 0 { watch = n }
+            }
+        }
+        i = i + 1
+    }
+
     refs := discover_refs(a)
     if len(refs) == 0 {
         println("nothing to sync — no collections found")
@@ -178,53 +331,18 @@ func cmd_sync(a) (code) {
         return code
     }
 
-    pushed := 0
-    pulled := 0
-    same := 0
-    i := 0
-    while i < len(refs) {
-        ref := refs[i]
-        lr := fetch_records(sync_local, sync_local_tok, ref)
-        rr := fetch_records(sync_remote, sync_remote_tok, ref)
-        // index remote by id for the merge
-        j := 0
-        while j < len(lr) {
-            lrec := lr[j]
-            id := rec_id(lrec)
-            rrec := find_rec(rr, id)
-            if rrec == "" {
-                // local-only → push
-                if push_doc(sync_remote, sync_remote_tok, ref, lrec) { pushed = pushed + 1 }
-            } else {
-                lm := rec_mtime(lrec)
-                rm := rec_mtime(rrec)
-                if lm > rm {
-                    if push_doc(sync_remote, sync_remote_tok, ref, lrec) { pushed = pushed + 1 }
-                } else if rm > lm {
-                    if push_doc(sync_local, sync_local_tok, ref, rrec) { pulled = pulled + 1 }
-                } else {
-                    same = same + 1
-                }
-            }
-            j = j + 1
+    if watch > 0 {
+        println("watching every " + str(watch) + "s — ctrl-c to stop")
+        pass := 0
+        while true {
+            pass = pass + 1
+            println("=== sync pass " + str(pass) + " ===")
+            sync_pass(refs)
+            sleep(watch * 1000)
         }
-        // remote-only docs → pull
-        j = 0
-        while j < len(rr) {
-            rrec := rr[j]
-            id := rec_id(rrec)
-            if find_rec(lr, id) == "" {
-                if push_doc(sync_local, sync_local_tok, ref, rrec) { pulled = pulled + 1 }
-            }
-            j = j + 1
-        }
-        println(ref + ": pushed=" + str(pushed) + " pulled=" + str(pulled) + " same=" + str(same) +
-            " local=" + str(len(lr)) + " remote=" + str(len(rr)))
-        pushed = 0
-        pulled = 0
-        same = 0
-        i = i + 1
+        return code
     }
+    sync_pass(refs)
     return code
 }
 
