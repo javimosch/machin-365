@@ -20,5 +20,5 @@ print("}")
 PY
 
 "$MACHIN" encode src/*.src > build/machin-365.mfl
-"$MACHIN" build build/machin-365.mfl -o build/machin-365
+"$MACHIN" build build/machin-365.mfl -o build/machin-365 --static
 echo "built build/machin-365"

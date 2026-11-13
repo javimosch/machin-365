@@ -32,7 +32,7 @@ func dispatch(a) (code) {
     code = 0
     cmd := a[1]
     if cmd == "init" { cmd_init()  return code }
-    if cmd == "catalog" || cmd == "apps" { cmd_catalog()  return code }
+    if cmd == "catalog" || cmd == "apps" { cmd_catalog(a)  return code }
     if cmd == "install" { return cmd_install(a) }
     if cmd == "run" { return cmd_run(a) }
     if cmd == "auth" {

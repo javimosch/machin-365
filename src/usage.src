@@ -8,7 +8,7 @@ func print_usage() {
     println("")
     println("commands:")
     println("  init                          create suite dirs + default config")
-    println("  catalog                       list apps in the catalog and install state")
+    println("  catalog [--refresh]           list apps; --refresh pulls ${server}/catalog.json")
     println("  install <id> [--bin PATH]     install an app (release asset or local binary)")
     println("  run <id> [args...]            run an installed app")
     println("  auth login --server URL --email E --password P [--org SLUG]")

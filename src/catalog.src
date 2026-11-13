@@ -1,7 +1,9 @@
 // catalog.src — the app catalog: what the suite can install.
-// The bundled copy is generated from catalog.json at build time
-// (catalog_gen.src, gitignored). MACHIN_365_CATALOG points at a JSON file
-// to override — that is also the seam a server-hosted catalog plugs into.
+// Resolution order: MACHIN_365_CATALOG env file > the suite-home snapshot
+// ($MACHIN_365_HOME/catalog.json, written by `catalog --refresh`) > the
+// copy bundled at build time. A server-hosted catalog therefore overrides
+// the bundled one once fetched; offline installs keep working on the
+// snapshot or the bundle.
 
 type Asset struct { platform string  url string  sha256 string }
 type CatApp struct {
@@ -23,6 +25,8 @@ type Catalog struct {
 func catalog_text() {
     p := env("MACHIN_365_CATALOG")
     if p != "" { return read_file(p) }
+    snap := read_file(catalog_path())
+    if snap != "" { return snap }
     return catalog_json()
 }
 

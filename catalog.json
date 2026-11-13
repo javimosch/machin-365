@@ -10,7 +10,13 @@
    "version": "0.1.0",
    "bin": "machin-tasks",
    "desc": "Get-things-done task list - offline-first, syncs when a server is configured",
-   "assets": []
+   "assets": [
+    {
+     "platform": "linux-amd64",
+     "url": "https://github.com/javimosch/machin-tasks/releases/download/v0.1.0/machin-tasks-linux-amd64",
+     "sha256": "10be978aa0eee90cf80a6873ae007ab060dbdb471d4bba3064bd104583f1d506"
+    }
+   ]
   },
   {
    "id": "chat",
@@ -20,7 +26,13 @@
    "version": "0.1.0",
    "bin": "machin-chat",
    "desc": "Live room chat over machin-rooms (ws://) - dogfoods the plain-websocket client path",
-   "assets": []
+   "assets": [
+    {
+     "platform": "linux-amd64",
+     "url": "https://github.com/javimosch/machin-chat/releases/download/v0.1.0/machin-chat-linux-amd64",
+     "sha256": "86efd0652dc3e055a61af3f175501650d61dbbbeacb975bde8dc04fb0e4ad22c"
+    }
+   ]
   }
  ]
 }

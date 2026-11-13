@@ -203,7 +203,35 @@ func cmd_run(a) (code) {
     return dc
 }
 
-func cmd_catalog() {
+// catalog --refresh pulls ${server}/catalog.json into the suite-home
+// snapshot, which then overrides the bundled catalog for catalog/install.
+func catalog_refresh() (code) {
+    code = 0
+    c := load_config()
+    if c.server == "" {
+        eprintln("machin-365: no server configured — run: auth login --server URL")
+        return 1
+    }
+    st, body, err := http_request("GET", c.server + "/catalog.json", []string{}, "")
+    if err != "" || st != 200 {
+        eprintln("machin-365: catalog fetch failed (http " + str(st) + ")")
+        return 1
+    }
+    cat := parse(body, Catalog{})
+    if len(cat.apps) == 0 {
+        eprintln("machin-365: server catalog invalid — refusing to save")
+        return 1
+    }
+    system("mkdir -p '" + suite_home() + "'")
+    write_file(catalog_path(), body)
+    println("catalog refreshed from " + c.server + " (" + str(len(cat.apps)) + " apps)")
+    return code
+}
+
+func cmd_catalog(a) {
+    if len(a) > 2 && a[2] == "--refresh" {
+        if catalog_refresh() != 0 { return }
+    }
     cat := load_catalog()
     r := load_registry()
     i := 0
