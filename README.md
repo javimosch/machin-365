@@ -11,15 +11,25 @@ in [MFL](https://github.com/javimosch/machin).
 ## Install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/javimosch/machin-365/main/install.sh | sh
+machin-365 init
+machin-365 catalog                  # apps in the catalog + install state
+machin-365 install tasks            # release asset, or:
+machin-365 install tasks --bin ./build/machin-tasks   # local build
+machin-365 run tasks                # launch (also in your OS app menu)
+```
+
+Or build from source (needs `machin` on PATH):
+
+```sh
 git clone https://github.com/javimosch/machin-365
-cd machin-365 && ./build.sh          # needs `machin` on PATH
-./build/machin-365 init
+cd machin-365 && ./build.sh         # static binary → build/machin-365
 ```
 
 ## Use
 
 ```sh
-machin-365 catalog                  # apps in the catalog + install state
+machin-365 catalog [--refresh]      # apps + install state; --refresh pulls ${server}/catalog.json
 machin-365 install tasks            # release asset, or:
 machin-365 install tasks --bin ./build/machin-tasks   # local build
 machin-365 run tasks                # launch (also in your OS app menu)
