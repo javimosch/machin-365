@@ -1,16 +1,26 @@
 {
-  "suite_version": 1,
-  "server_default": "",
-  "apps": [
-    {
-      "id": "tasks",
-      "name": "Tasks",
-      "kind": "desktop",
-      "repo": "javimosch/machin-tasks",
-      "version": "0.1.0",
-      "bin": "machin-tasks",
-      "desc": "Get-things-done task list - offline-first, syncs when a server is configured",
-      "assets": []
-    }
-  ]
+ "suite_version": 1,
+ "server_default": "",
+ "apps": [
+  {
+   "id": "tasks",
+   "name": "Tasks",
+   "kind": "desktop",
+   "repo": "javimosch/machin-tasks",
+   "version": "0.1.0",
+   "bin": "machin-tasks",
+   "desc": "Get-things-done task list - offline-first, syncs when a server is configured",
+   "assets": []
+  },
+  {
+   "id": "chat",
+   "name": "Chat",
+   "kind": "desktop",
+   "repo": "javimosch/machin-chat",
+   "version": "0.1.0",
+   "bin": "machin-chat",
+   "desc": "Live room chat over machin-rooms (ws://) - dogfoods the plain-websocket client path",
+   "assets": []
+  }
+ ]
 }
