@@ -27,4 +27,11 @@ jobs:
         run: ./build.sh
 
       - name: Smoke test
-        run: ./build/machin-365 catalog >/dev/null && echo "catalog ok"
+        run: |
+          ./build/machin-365 catalog >/dev/null && echo "catalog ok"
+          export MACHIN_365_HOME=/tmp/m365-ci
+          ./build/machin-365 auth status | grep -q "not configured" \
+            || { echo "auth status: unexpected output"; ./build/machin-365 auth status; exit 1; }
+          # unconfigured sync must fail loudly, not silently succeed
+          ./build/machin-365 sync 2>&1 | grep -q "no remote configured" \
+            || { echo "sync: expected 'no remote configured'"; exit 1; }
