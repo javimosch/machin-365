@@ -20,6 +20,51 @@ func strip_slash(s) {
     return s
 }
 
+// POST /v1/auth/login {email,password,org} → tokens. msg "" on success,
+// otherwise the transport error or "HTTP <status> <body>" to report.
+func auth_login_call(server, email, password, org) (lr, msg) {
+    lr = LoginResp{}
+    msg = ""
+    body := "{\"email\":" + json(email) + ",\"password\":" + json(password) + ",\"org\":" + json(org) + "}"
+    st, resp, err := http_request("POST", server + "/v1/auth/login", []string{"Content-Type: application/json"}, body)
+    if err != "" { msg = err  return }
+    if st != 200 { msg = "HTTP " + str(st) + " " + resp  return }
+    lr = parse(resp, LoginResp{})
+    if lr.tokens.access_token == "" { msg = "login response missing access_token" }
+    return
+}
+
+// GET /v1/auth/me → the account's org slugs. ok=false means the server has
+// no /me route or the call failed — memberships unknown, not zero.
+func auth_my_orgs(server, tok) (orgs, ok) {
+    orgs = []string{}
+    ok = false
+    st, body, err := http_request("GET", server + "/v1/auth/me",
+        []string{"Authorization: Bearer " + tok}, "")
+    if err != "" || st != 200 { return }
+    ok = true
+    j := 0
+    while true {
+        r, e := json_get(body, ".memberships[" + str(j) + "].org_slug")
+        if e != "" { break }
+        slug := parse(r, "")
+        if slug != "" { orgs = append(orgs, slug) }
+        j = j + 1
+    }
+    return
+}
+
+func join_strs(list, sep) {
+    out := ""
+    i := 0
+    while i < len(list) {
+        if i > 0 { out = out + sep }
+        out = out + list[i]
+        i = i + 1
+    }
+    return out
+}
+
 func cmd_auth_login(a) (code) {
     code = 0
     server := ""
@@ -46,21 +91,45 @@ func cmd_auth_login(a) (code) {
         return 2
     }
     server = strip_slash(server)
-    body := "{\"email\":" + json(email) + ",\"password\":" + json(password) + ",\"org\":" + json(org) + "}"
-    st, resp, err := http_request("POST", server + "/v1/auth/login", []string{"Content-Type: application/json"}, body)
-    if err != "" {
-        eprintln("machin-365: login failed: " + err)
+    lr, msg := auth_login_call(server, email, password, org)
+    if msg != "" {
+        eprintln("machin-365: login failed: " + msg)
         return 1
     }
-    if st != 200 {
-        eprintln("machin-365: login failed: HTTP " + str(st) + " " + resp)
-        return 1
+
+    // --org omitted: the issued token has an empty org claim, which
+    // org-scoped collections refuse. Ask /v1/auth/me for memberships and
+    // re-login scoped when the choice is unambiguous — the org this config
+    // already used, or the account's only org. Several orgs need --org.
+    picked := ""
+    if org == "" {
+        myorgs, mok := auth_my_orgs(server, lr.tokens.access_token)
+        if mok {
+            prev := load_config().org
+            if prev != "" && has_ref(myorgs, prev) {
+                picked = prev
+            } else if len(myorgs) == 1 {
+                picked = myorgs[0]
+            }
+            if picked != "" {
+                org = picked
+                lr, msg = auth_login_call(server, email, password, org)
+                if msg != "" {
+                    eprintln("machin-365: login failed: " + msg)
+                    return 1
+                }
+            } else if len(myorgs) > 1 {
+                eprintln("machin-365: this account belongs to " + str(len(myorgs)) +
+                    " orgs: " + join_strs(myorgs, ", "))
+                eprintln("machin-365: token has no org scope — re-run with --org SLUG" +
+                    " (org-scoped collections refuse org-less tokens)")
+            } else {
+                eprintln("machin-365: account has no org memberships —" +
+                    " org-scoped collections will refuse this token")
+            }
+        }
     }
-    lr := parse(resp, LoginResp{})
-    if lr.tokens.access_token == "" {
-        eprintln("machin-365: login response missing access_token")
-        return 1
-    }
+
     c := load_config()
     c.server = server
     c.token = lr.tokens.access_token
@@ -69,6 +138,11 @@ func cmd_auth_login(a) (code) {
     c.org = org
     save_config(c)
     println("logged in to " + server + " as " + email)
+    if org != "" {
+        note := ""
+        if picked != "" { note = " (auto-selected — --org overrides)" }
+        println("org: " + org + note)
+    }
     return code
 }
 
@@ -161,19 +235,9 @@ func cmd_auth_signup(a) (code) {
         return 1
     }
 
-    lbody := "{\"email\":" + json(email) + ",\"password\":" + json(password) + ",\"org\":" + json(org) + "}"
-    st, resp, err = http_request("POST", server + "/v1/auth/login", jhdr, lbody)
-    if err != "" {
-        eprintln("machin-365: login failed: " + err)
-        return 1
-    }
-    if st != 200 {
-        eprintln("machin-365: login failed: HTTP " + str(st) + " " + resp)
-        return 1
-    }
-    lr := parse(resp, LoginResp{})
-    if lr.tokens.access_token == "" {
-        eprintln("machin-365: login response missing access_token")
+    lr, msg := auth_login_call(server, email, password, org)
+    if msg != "" {
+        eprintln("machin-365: login failed: " + msg)
         return 1
     }
     c := load_config()
@@ -195,7 +259,11 @@ func cmd_auth_status() {
     }
     println("server:  " + c.server)
     println("email:   " + c.email)
-    println("org:     " + c.org)
+    if c.org == "" && c.token != "" {
+        println("org:     (none — org-scoped collections will refuse this token)")
+    } else {
+        println("org:     " + c.org)
+    }
     if c.token != "" {
         println("token:   present")
     } else {
