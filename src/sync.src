@@ -22,6 +22,34 @@ var sync_remote_tok = ""
 var sync_local = ""
 var sync_local_tok = ""
 
+// Failed local/remote data calls in the current pass. Every non-2xx (or
+// transport error) on the store paths is counted and messaged — a sync that
+// could not reach or was refused by a side must not report success.
+var sync_err_count = 0
+var sync_err_msgs = []string{}
+
+// "HTTP 403 <server message>" style detail; transport errors pass through.
+func http_errnote(st, err, resp) {
+    if err != "" { return err }
+    m, e := json_get(resp, ".error.message")
+    if e == "" {
+        mm := parse(m, "")
+        if mm != "" { return "HTTP " + str(st) + " " + mm }
+    }
+    return "HTTP " + str(st)
+}
+
+func sync_note_err(side, what, st, err, resp) {
+    sync_err_count = sync_err_count + 1
+    msg := side + " " + what + " failed: " + http_errnote(st, err, resp)
+    i := 0
+    while i < len(sync_err_msgs) {
+        if sync_err_msgs[i] == msg { return }
+        i = i + 1
+    }
+    if len(sync_err_msgs) < 12 { sync_err_msgs = append(sync_err_msgs, msg) }
+}
+
 func sync_setup() {
     c := load_config()
     sync_remote = env("MACHIN_365_REMOTE")
@@ -46,20 +74,25 @@ func api_post(base, tok, path, body) {
     return st, resp, err
 }
 
-func api_delete(base, tok, path) {
-    st, _, err := http_request("DELETE", base + path,
+func api_delete(base, tok, path, side) {
+    st, resp, err := http_request("DELETE", base + path,
         []string{"Authorization: Bearer " + tok}, "")
-    return (st == 200 || st == 204) && err == ""
+    ok := (st == 200 || st == 204) && err == ""
+    if !ok { sync_note_err(side, "DELETE " + path, st, err, resp) }
+    return ok
 }
 
 // fetch every record of a collection as raw JSON objects, paginated.
-func fetch_records(base, tok, ref) (recs) {
+func fetch_records(base, tok, ref, side) (recs) {
     recs = []string{}
     off := 0
     while true {
         st, body, err := api_get(base, tok, "/v1/store/" + ref +
             "?limit=500&offset=" + str(off))
-        if err != "" || st != 200 { break }
+        if err != "" || st != 200 {
+            sync_note_err(side, "GET /v1/store/" + ref, st, err, body)
+            break
+        }
         i := 0
         n := 0
         while true {
@@ -116,9 +149,11 @@ func find_rec(recs, id) {
     return ""
 }
 
-func push_doc(base, tok, ref, rec) {
-    st, _, err := api_post(base, tok, "/v1/store/" + ref, stamp(rec))
-    return (st == 200 || st == 201) && err == ""
+func push_doc(base, tok, ref, rec, side) {
+    st, resp, err := api_post(base, tok, "/v1/store/" + ref, stamp(rec))
+    ok := (st == 200 || st == 201) && err == ""
+    if !ok { sync_note_err(side, "POST /v1/store/" + ref, st, err, resp) }
+    return ok
 }
 
 // collection holding delete markers: {"ref":"ns/coll","id":"...","_mtime":T}
@@ -128,7 +163,7 @@ var sync_tomb_coll = "sync/tombstones"
 // local sync/tombstones collection.
 func load_tombs() (tm) {
     tm = make(map[string]int)
-    recs := fetch_records(sync_local, sync_local_tok, sync_tomb_coll)
+    recs := fetch_records(sync_local, sync_local_tok, sync_tomb_coll, "local")
     i := 0
     while i < len(recs) {
         r := recs[i]
@@ -213,8 +248,9 @@ func sync_one_ref(ref, tm) {
     pulled := 0
     same := 0
     deleted := 0
-    lr := fetch_records(sync_local, sync_local_tok, ref)
-    rr := fetch_records(sync_remote, sync_remote_tok, ref)
+    e0 := sync_err_count
+    lr := fetch_records(sync_local, sync_local_tok, ref, "local")
+    rr := fetch_records(sync_remote, sync_remote_tok, ref, "remote")
 
     // pre-delete: any surviving record that loses to a tombstone goes away
     j := 0
@@ -222,7 +258,7 @@ func sync_one_ref(ref, tm) {
         r := lr[j]
         id := rec_id(r)
         if id != "" && tomb_wins(tm, ref, id, rec_mtime(r)) {
-            if api_delete(sync_local, sync_local_tok, "/v1/store/" + ref + "/" + id) {
+            if api_delete(sync_local, sync_local_tok, "/v1/store/" + ref + "/" + id, "local") {
                 deleted = deleted + 1
             }
         }
@@ -233,7 +269,7 @@ func sync_one_ref(ref, tm) {
         r := rr[j]
         id := rec_id(r)
         if id != "" && tomb_wins(tm, ref, id, rec_mtime(r)) {
-            if api_delete(sync_remote, sync_remote_tok, "/v1/store/" + ref + "/" + id) {
+            if api_delete(sync_remote, sync_remote_tok, "/v1/store/" + ref + "/" + id, "remote") {
                 deleted = deleted + 1
             }
         }
@@ -252,13 +288,13 @@ func sync_one_ref(ref, tm) {
         if !ldead {
             if rrec == "" || rdead {
                 // local-only (or remote copy dead) → push
-                if push_doc(sync_remote, sync_remote_tok, ref, lrec) { pushed = pushed + 1 }
+                if push_doc(sync_remote, sync_remote_tok, ref, lrec, "remote") { pushed = pushed + 1 }
             } else {
                 rm := rec_mtime(rrec)
                 if lm > rm {
-                    if push_doc(sync_remote, sync_remote_tok, ref, lrec) { pushed = pushed + 1 }
+                    if push_doc(sync_remote, sync_remote_tok, ref, lrec, "remote") { pushed = pushed + 1 }
                 } else if rm > lm {
-                    if push_doc(sync_local, sync_local_tok, ref, rrec) { pulled = pulled + 1 }
+                    if push_doc(sync_local, sync_local_tok, ref, rrec, "local") { pulled = pulled + 1 }
                 } else {
                     same = same + 1
                 }
@@ -275,7 +311,7 @@ func sync_one_ref(ref, tm) {
             lrec := find_rec(lr, id)
             lhas := lrec != "" && !tomb_wins(tm, ref, id, rec_mtime(lrec))
             if !lhas {
-                if push_doc(sync_local, sync_local_tok, ref, rrec) { pulled = pulled + 1 }
+                if push_doc(sync_local, sync_local_tok, ref, rrec, "local") { pulled = pulled + 1 }
             }
         }
         j = j + 1
@@ -283,11 +319,16 @@ func sync_one_ref(ref, tm) {
     println(ref + ": pushed=" + str(pushed) + " pulled=" + str(pulled) +
         " deleted=" + str(deleted) + " same=" + str(same) +
         " local=" + str(len(lr)) + " remote=" + str(len(rr)))
+    if sync_err_count > e0 {
+        eprintln(ref + ": " + str(sync_err_count - e0) + " call(s) failed")
+    }
 }
 
 // one full replication pass: tombstones merge first so delete decisions
 // use converged state, then every configured collection.
 func sync_pass(refs) {
+    sync_err_count = 0
+    sync_err_msgs = []string{}
     empty := make(map[string]int)
     sync_one_ref(sync_tomb_coll, empty)
     tm := load_tombs()
@@ -295,6 +336,14 @@ func sync_pass(refs) {
     while i < len(refs) {
         if refs[i] != sync_tomb_coll { sync_one_ref(refs[i], tm) }
         i = i + 1
+    }
+    if sync_err_count > 0 {
+        eprintln("sync incomplete: " + str(sync_err_count) + " call(s) failed this pass:")
+        j := 0
+        while j < len(sync_err_msgs) {
+            eprintln("  " + sync_err_msgs[j])
+            j = j + 1
+        }
     }
 }
 
@@ -343,6 +392,7 @@ func cmd_sync(a) (code) {
         return code
     }
     sync_pass(refs)
+    if sync_err_count > 0 { return 1 }
     return code
 }
 
