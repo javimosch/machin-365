@@ -2,6 +2,10 @@
 // One bkn per suite home: binary in bin/, database in bkn/, pid in
 // bkn/bkn.pid, log in bkn/bkn.log. Port and admin token live in config.json.
 // Default port 17630; BKN_PORT-style override via MACHIN_365_BKN_PORT.
+//
+// Multiple suite homes (MACHIN_365_HOME) share that default port, so a
+// bare "something answers /_health" is NOT proof the bkn belongs to this
+// home — bkn_owner() verifies identity before start/status claim it.
 
 func bkn_bin() { return suite_home() + "/bin/bkn" }
 func bkn_db() { return suite_home() + "/bkn/bkn.db" }
@@ -53,12 +57,45 @@ func cmd_service_install(a) (code) {
     return code
 }
 
-func service_running() {
-    st, _, _ := http_get(local_url() + "/_health")
-    return st == 200
+// pid the bkn answering /_health reports; "" when nothing healthy listens.
+func bkn_health_pid() {
+    st, body, err := http_get(local_url() + "/_health")
+    if err != "" || st != 200 { return "" }
+    v, e := json_get(body, ".pid")
+    if e != "" { return "" }
+    return trim(v)
 }
 
-func cmd_service_start() {
+// true when the listener accepts tok as an admin bearer on an authed
+// store route. Proves the bkn on our port holds THIS home's token.
+func bkn_accepts(tok) {
+    st, _, err := http_request("GET",
+        local_url() + "/v1/store/m365/tasks?limit=1",
+        []string{"Authorization: Bearer " + tok}, "")
+    return err == "" && st >= 200 && st < 300
+}
+
+// "ours" | "foreign" | "down" — who owns the bkn listening on bkn_port().
+// A /_health 200 alone is not enough: every suite home's bkn answers it.
+// Identity is proven by the admin token being accepted AND a bogus token
+// rejected (a bkn started without BKN_ADMIN_TOKEN accepts anything on
+// loopback, which proves nothing), or by /_health's pid matching the
+// pidfile — the pid we spawned.
+func bkn_owner() {
+    hp := bkn_health_pid()
+    if hp == "" { return "down" }
+    c := load_config()
+    if c.local_token != "" &&
+        bkn_accepts(c.local_token) && !bkn_accepts("m365-foreign-probe") {
+        return "ours"
+    }
+    pp := trim(read_file(bkn_pidfile()))
+    if pp != "" && pp == hp { return "ours" }
+    return "foreign"
+}
+
+func cmd_service_start() (code) {
+    code = 0
     c := load_config()
     if c.local_token == "" {
         // 32 hex chars of randomness is enough for a loopback admin token.
@@ -67,9 +104,16 @@ func cmd_service_start() {
     // persist port+token — apps discover the endpoint via config.json
     c.local_port = bkn_port()
     save_config(c)
-    if service_running() {
+    own := bkn_owner()
+    if own == "ours" {
         println("bkn already running at " + local_url())
-        return
+        return code
+    }
+    if own == "foreign" {
+        eprintln("machin-365: port " + str(bkn_port()) + " already serves a different bkn " +
+            "(pid " + bkn_health_pid() + ") — another MACHIN_365_HOME?")
+        eprintln("machin-365: set MACHIN_365_BKN_PORT or stop the other instance")
+        return 1
     }
     system("mkdir -p '" + suite_home() + "/bkn'")
     cmd := "BKN_DATA='" + bkn_db() + "' BKN_PORT=" + str(bkn_port()) +
@@ -78,38 +122,77 @@ func cmd_service_start() {
     _, out, err := exec(cmd)
     if err != "" {
         eprintln("machin-365: service start failed: " + err)
-        return
+        return 1
     }
     pid := trim(out)
     write_file(bkn_pidfile(), pid + "\n")
-    // wait for health (max ~3s)
+    // wait until the port serves THIS home's bkn — a foreign bkn that
+    // answers /_health must not satisfy the wait (or the claim).
     i := 0
     while i < 30 {
-        if service_running() {
-            println("bkn running at " + local_url() + " (pid " + pid + ")")
-            return
+        own = bkn_owner()
+        if own == "ours" {
+            hpid := bkn_health_pid()
+            if hpid != "" && hpid != pid { write_file(bkn_pidfile(), hpid + "\n") }
+            println("bkn running at " + local_url() + " (pid " + hpid + ")")
+            return code
         }
+        if own == "foreign" { break }
         sleep(100)
         i = i + 1
     }
-    eprintln("machin-365: bkn did not come up — see " + bkn_log())
+    own = bkn_owner()
+    if own == "foreign" {
+        eprintln("machin-365: port " + str(bkn_port()) + " is held by a different bkn — " +
+            "set MACHIN_365_BKN_PORT or stop the other instance")
+    } else {
+        eprintln("machin-365: bkn did not come up — see " + bkn_log())
+    }
+    return 1
 }
 
 func cmd_service_stop() {
     pid := trim(read_file(bkn_pidfile()))
     if pid == "" {
-        eprintln("machin-365: no pidfile — is the service running?")
+        own := bkn_owner()
+        if own == "foreign" {
+            eprintln("machin-365: no pidfile — port " + str(bkn_port()) +
+                " serves a bkn this home did not start (another MACHIN_365_HOME?)")
+        } else if own == "ours" {
+            eprintln("machin-365: bkn is running (pid " + bkn_health_pid() +
+                ") but " + bkn_pidfile() + " is missing")
+        } else {
+            eprintln("machin-365: no pidfile — is the service running?")
+        }
         return
     }
-    system("kill " + pid)
-    remove(bkn_pidfile())
-    println("stopped bkn (pid " + pid + ")")
+    // a healthy bkn on our port whose pid differs from the pidfile means
+    // the pidfile is stale — its pid may have been recycled, so don't kill.
+    hp := bkn_health_pid()
+    if hp != "" && hp != pid {
+        eprintln("machin-365: port " + str(bkn_port()) + " serves pid " + hp +
+            ", not pidfile pid " + pid + " — pidfile is stale, not killing")
+        remove(bkn_pidfile())
+        return
+    }
+    if system("kill " + pid) == 0 {
+        remove(bkn_pidfile())
+        println("stopped bkn (pid " + pid + ")")
+    } else {
+        eprintln("machin-365: pid " + pid + " is not running — removing stale pidfile")
+        remove(bkn_pidfile())
+    }
 }
 
 func cmd_service_status() {
-    if service_running() {
-        println("bkn: running at " + local_url())
+    own := bkn_owner()
+    if own == "ours" {
+        println("bkn: running at " + local_url() + " (pid " + bkn_health_pid() + ")")
         println("db:  " + bkn_db())
+    } else if own == "foreign" {
+        println("bkn: port " + str(bkn_port()) + " serves a different bkn (pid " +
+            bkn_health_pid() + ") — not this home's instance")
+        println("hint: set MACHIN_365_BKN_PORT for this home, or stop the other instance")
     } else {
         println("bkn: not running")
     }
