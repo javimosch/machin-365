@@ -174,6 +174,12 @@ func ensure_service() {
     cmd_service_start()
 }
 
+// shell_quote wraps s in single quotes for /bin/sh, escaping embedded
+// single quotes the POSIX way (' → '\'').
+func shell_quote(s) {
+    return "'" + replace(s, "'", "'\\''") + "'"
+}
+
 func cmd_run(a) (code) {
     code = 0
     id := ""
@@ -193,14 +199,15 @@ func cmd_run(a) (code) {
         eprintln("machin-365: '" + id + "' is not installed — run: machin-365 install " + id)
         return 1
     }
-    rest := ""
+    // system() inherits stdio, so the app's stdout/stderr reach the user
+    // live — exec() would capture and silently drop them.
+    cmd := shell_quote(t.bin)
     j := 3
     while j < len(a) {
-        rest = rest + " " + a[j]
+        cmd = cmd + " " + shell_quote(a[j])
         j = j + 1
     }
-    dc, _, _ := exec(t.bin + rest)
-    return dc
+    return system(cmd)
 }
 
 // catalog --refresh pulls ${server}/catalog.json into the suite-home
