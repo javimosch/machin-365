@@ -77,12 +77,16 @@ Replication is one pass per invocation (`--watch N` loops every N seconds),
 last-writer-wins on an app-level `_mtime` field (POST upserts by record id).
 
 **Deletes propagate via tombstones**: before deleting a synced doc, the app
-POSTs `{"ref":"ns/coll","id":"...","_mtime":T}` to the `sync/tombstones`
-collection, then DELETEs the record. `sync/tombstones` is itself a synced
+POSTs `{"ref":"ns/coll","id":"ns/coll|<id>","_mtime":T}` to the
+`sync/tombstones` collection — the tombstone's own doc id is the compound
+`ref|id`, so same-id deletes in different collections cannot overwrite each
+other — then DELETEs the record. `sync/tombstones` is itself a synced
 collection, so markers replicate like any doc; a record older than its
 tombstone is deleted on both sides, while a newer `_mtime` (edit after
-delete) wins and the record survives. Apps that skip the tombstone will see
-deletes resurrect — tombstone first, then delete.
+delete) wins and the record survives. Legacy tombstones written with a
+bare target `.id` are still honoured and are rewritten to the compound id
+on each sync pass. Apps that skip the tombstone will see deletes
+resurrect — tombstone first, then delete.
 
 ## Layout
 

@@ -1,0 +1,72 @@
+// tombs.src — delete-marker handling for sync. A deleter POSTs
+// {"ref":"ns/coll","id":"ns/coll|<target>","_mtime":T} to sync/tombstones,
+// then DELETEs the record. The tombstone's own doc id is the compound
+// "ref|id" — a bare target id would let same-id deletes in different
+// collections overwrite each other and resurrect. Legacy tombstones
+// written with a bare ".id" are still honoured, and each sync pass
+// rewrites them to the compound id.
+
+// collection holding delete markers. New-style docs carry the compound
+// "ref|id" as .id so same-id deletes in different collections cannot
+// collide; legacy docs carry the bare target id and are still honoured.
+var sync_tomb_coll = "sync/tombstones"
+
+// tomb map: "ref|id" -> newest tombstone _mtime, from the (just-merged)
+// local sync/tombstones collection.
+func load_tombs() (tm) {
+    tm = make(map[string]int)
+    recs := fetch_records(sync_local, sync_local_tok, sync_tomb_coll, "local")
+    i := 0
+    while i < len(recs) {
+        r := recs[i]
+        ref := jstr(r, ".ref")
+        id := jstr(r, ".id")
+        mt := rec_mtime(r)
+        if ref != "" && id != "" && mt > 0 {
+            k := ref + "|" + id
+            // new-style tombstones already use "ref|id" as the doc id —
+            // that string IS the match key; legacy bare-id docs need the
+            // ref prepended
+            if has_prefix(id, ref + "|") { k = id }
+            if mt > tm[k] { tm[k] = mt }
+        }
+        i = i + 1
+    }
+    return tm
+}
+
+// true when a tombstone newer than mt exists for ref/id — the record is dead.
+func tomb_wins(tm, ref, id, mt) {
+    return tm[ref + "|" + id] > mt
+}
+
+// Rewrite legacy bare-id tombstones to the compound "ref|id" doc id so
+// same-id deletes in different collections can coexist. Runs on both
+// sides before the tombstone merge each pass; already-compound docs and
+// invalid markers are left alone. When a compound doc for the same target
+// already exists with a newer-or-equal _mtime the legacy doc is redundant
+// and is just dropped — rewriting it would needlessly downgrade the mt.
+func canon_tombs(base, tok, side) {
+    recs := fetch_records(base, tok, sync_tomb_coll, side)
+    i := 0
+    while i < len(recs) {
+        r := recs[i]
+        ref := jstr(r, ".ref")
+        id := jstr(r, ".id")
+        mt := rec_mtime(r)
+        if ref != "" && id != "" && mt > 0 && !has_prefix(id, ref + "|") {
+            nid := ref + "|" + id
+            dup := find_rec(recs, nid)
+            dmt := 0
+            if dup != "" { dmt = rec_mtime(dup) }
+            if dmt >= mt {
+                api_delete(base, tok, "/v1/store/" + sync_tomb_coll + "/" + id, side)
+            } else if push_doc(base, tok, sync_tomb_coll,
+                "{\"ref\":" + json(ref) + ",\"id\":" + json(nid) +
+                ",\"_mtime\":" + str(mt) + "}", side) {
+                api_delete(base, tok, "/v1/store/" + sync_tomb_coll + "/" + id, side)
+            }
+        }
+        i = i + 1
+    }
+}
