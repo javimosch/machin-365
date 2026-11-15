@@ -23,6 +23,10 @@ func cmd_init() {
     } else {
         println("already initialized: " + suite_home())
     }
+    if env("MACHIN_365_HOME") != "" && bkn_port() == 17630 {
+        eprintln("machin-365: warning: MACHIN_365_HOME is set but the bkn port is the " +
+            "shared default 17630 — set MACHIN_365_BKN_PORT to run multiple suite homes")
+    }
     println("")
     println("next: machin-365 catalog   — see available apps")
     println("      machin-365 auth login --server URL --email E --password P")
@@ -46,7 +50,7 @@ func dispatch(a) (code) {
     if cmd == "config" { cmd_config()  return code }
     if cmd == "service" {
         if len(a) > 2 && a[2] == "install" { return cmd_service_install(a) }
-        if len(a) > 2 && a[2] == "start" { cmd_service_start()  return code }
+        if len(a) > 2 && a[2] == "start" { return cmd_service_start() }
         if len(a) > 2 && a[2] == "stop" { cmd_service_stop()  return code }
         if len(a) > 2 && a[2] == "status" { cmd_service_status()  return code }
         eprintln("usage: machin-365 service <install|start|stop|status>")
