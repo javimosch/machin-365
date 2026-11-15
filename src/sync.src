@@ -97,6 +97,12 @@ func api_delete(base, tok, path, side) {
     return ok
 }
 
+func api_patch(base, tok, path, body) {
+    st, resp, err := http_request("PATCH", base + path,
+        []string{"Authorization: Bearer " + tok, "Content-Type: application/json"}, body)
+    return st, resp, err
+}
+
 // One transport-level probe of the local endpoint per pass. A connect
 // failure means nothing is listening — say so once instead of reporting a
 // wall of per-call "connect" errors. Any HTTP status counts as alive:
@@ -132,24 +138,6 @@ func fetch_records(base, tok, ref, side) (recs) {
         off = off + 500
     }
     return recs
-}
-
-// mtime of a raw record JSON; 0 when absent/unparseable.
-func rec_mtime(rec) (mt) {
-    mt = 0
-    v, e := json_get(rec, "._mtime")
-    if e != "" { return mt }
-    return parse_int(trim(v))
-}
-
-// ensure _mtime is present, injecting now_ms() at top level if missing.
-func stamp(rec) {
-    _, e := json_get(rec, "._mtime")
-    if e == "" { return rec }
-    inner := substr(rec, 0, len(rec)-1)
-    comma := ","
-    if len(inner) <= 1 { comma = "" }
-    return inner + comma + "\"_mtime\":" + str(now_ms()) + "}"
 }
 
 func rec_id(rec) {
@@ -249,6 +237,12 @@ func sync_one_ref(ref, tm) {
     e0 := sync_err_count
     lr := fetch_records(sync_local, sync_local_tok, ref, "local")
     rr := fetch_records(sync_remote, sync_remote_tok, ref, "remote")
+
+    // _mtime is a sync-internal stamp apps never write: a local record
+    // without a usable one is necessarily the freshest write sync has seen.
+    // Stamp it (and persist the stamp) BEFORE comparing, or LWW reads it as
+    // epoch 0 and the next pull silently reverts the local edit.
+    heal_local_docs(ref, lr)
 
     // pre-delete: any surviving record that loses to a tombstone goes away
     j := 0
