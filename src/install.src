@@ -173,7 +173,9 @@ func cmd_install(a) (code) {
 // rather than let the app talk to the wrong home's data layer.
 func ensure_service() (code) {
     code = 0
-    if file_size(bkn_bin()) == 0 { return code }
+    // file_size is -1 for a missing path, 0 for an empty one — both mean
+    // "no bkn installed", so the check must be <= 0, not == 0.
+    if file_size(bkn_bin()) <= 0 { return code }
     if bkn_owner() == "ours" { return code }
     return cmd_service_start()
 }
