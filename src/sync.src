@@ -99,6 +99,7 @@ func fetch_records(base, tok, ref, side) (recs) {
         st, body, err := api_get(base, tok, "/v1/store/" + ref +
             "?limit=500&offset=" + str(off))
         if err != "" || st != 200 {
+            if side == "remote" && is_private_admin_err(st, body) && remote_provision(ref) { continue }
             sync_note_err(side, "GET /v1/store/" + ref, st, err, body)
             break
         }
@@ -159,8 +160,13 @@ func find_rec(recs, id) {
 }
 
 func push_doc(base, tok, ref, rec, side) {
-    st, resp, err := api_post(base, tok, "/v1/store/" + ref, stamp(rec))
+    doc := stamp(rec)
+    st, resp, err := api_post(base, tok, "/v1/store/" + ref, doc)
     ok := (st == 200 || st == 201) && err == ""
+    if !ok && side == "remote" && is_private_admin_err(st, resp) && remote_provision(ref) {
+        st, resp, err = api_post(base, tok, "/v1/store/" + ref, doc)
+        ok = (st == 200 || st == 201) && err == ""
+    }
     if !ok { sync_note_err(side, "POST /v1/store/" + ref, st, err, resp) }
     return ok
 }
@@ -383,6 +389,7 @@ func sync_pass_once(refs) {
     sync_err_count = 0
     sync_err_msgs = []string{}
     sync_remote_auth_err = false
+    sync_provision_tried = []string{}
     empty := make(map[string]int)
     sync_one_ref(sync_tomb_coll, empty)
     tm := load_tombs()
