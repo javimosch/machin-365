@@ -1,0 +1,263 @@
+// sync_mtime_test.src — regression test for issue #1: records without
+// _mtime must not lose local edits to last-writer-wins.
+//
+// Two in-process fake bkn store servers (local + remote) speak just enough
+// of /v1/store — GET list/single, POST upsert, PATCH merge, DELETE — for the
+// real sync_pass_once to run against. The scenario mirrors the issue repro:
+// a plain app upsert that drops _mtime must survive the next sync, and a
+// doc present on both sides with no _mtime anywhere must resolve
+// deterministically instead of counting as `same` forever.
+//
+// Run via test/run.sh (machin test framework/test.src + src/* minus main).
+
+// --- fake bkn ----------------------------------------------------------------
+
+// fake_read accumulates one HTTP request: headers through CRLFCRLF, then
+// exactly Content-Length body bytes (read() returns arbitrary chunks).
+func fake_read(fd) (req) {
+    buf := ""
+    while index(buf, "\r\n\r\n") < 0 {
+        c := read(fd)
+        if c == "" { return "" }
+        buf = buf + c
+    }
+    he := index(buf, "\r\n\r\n")
+    head := substr(buf, 0, he)
+    lh := to_lower(head)
+    cl := 0
+    p := index(lh, "content-length:")
+    if p >= 0 {
+        i := p + 15
+        while i < len(lh) && substr(lh, i, i + 1) == " " { i = i + 1 }
+        n := 0
+        while i < len(lh) {
+            ch := substr(lh, i, i + 1)
+            if ch < "0" || ch > "9" { break }
+            n = n * 10 + parse_int(ch)
+            i = i + 1
+        }
+        cl = n
+    }
+    body := substr(buf, he + 4, len(buf))
+    while len(body) < cl {
+        c := read(fd)
+        if c == "" { break }
+        body = body + c
+    }
+    return head + "\r\n\r\n" + body
+}
+
+// st is one server's whole state: "n" mints ids, "d|<ref>|<id>" holds the
+// raw stored document (id inside, like bkn's read-merged shape).
+func fake_list(st, ref) (out) {
+    out = "["
+    first := true
+    p := "d|" + ref + "|"
+    ks := keys(st)
+    i := 0
+    while i < len(ks) {
+        k := ks[i]
+        if has_prefix(k, p) {
+            if !first { out = out + "," }
+            first = false
+            out = out + st[k]
+        }
+        i = i + 1
+    }
+    return out + "]"
+}
+
+func fake_route(st, req) (resp) {
+    le := index(req, "\r\n")
+    line := substr(req, 0, le)
+    sp1 := index(line, " ")
+    rest := substr(line, sp1 + 1, len(line))
+    sp2 := index(rest, " ")
+    method := substr(line, 0, sp1)
+    path := substr(rest, 0, sp2)
+    q := index(path, "?")
+    if q >= 0 { path = substr(path, 0, q) }
+    he := index(req, "\r\n\r\n")
+    body := ""
+    if he >= 0 { body = substr(req, he + 4, len(req)) }
+    segs := []string{}
+    parts := split(path, "/")
+    i := 0
+    while i < len(parts) {
+        if parts[i] != "" { segs = append(segs, parts[i]) }
+        i = i + 1
+    }
+    status := "404 Not Found"
+    out := "{\"ok\":false,\"error\":{\"message\":\"no such route\",\"type\":\"not_found\"}}"
+    if len(segs) >= 4 && segs[0] == "v1" && segs[1] == "store" {
+        ref := segs[2] + "/" + segs[3]
+        if method == "GET" && len(segs) == 4 {
+            status = "200 OK"
+            out = "{\"ok\":true,\"records\":" + fake_list(st, ref) + "}"
+        }
+        if method == "GET" && len(segs) >= 5 {
+            doc := st["d|" + ref + "|" + segs[4]]
+            if doc == "" {
+                status = "404 Not Found"
+                out = "{\"ok\":false,\"error\":{\"message\":\"record not found\",\"type\":\"not_found\"}}"
+            } else {
+                status = "200 OK"
+                out = "{\"ok\":true,\"record\":" + doc + "}"
+            }
+        }
+        if method == "POST" && len(segs) == 4 {
+            iv, ie := json_get(body, ".id")
+            id := ""
+            if ie == "" { id = parse(iv, "") }
+            if id == "" {
+                n := parse_int(st["n"]) + 1
+                st["n"] = str(n)
+                id = "id-" + str(n)
+                inner := substr(body, 1, len(body) - 1)
+                if trim(inner) == "" {
+                    body = "{\"id\":\"" + id + "\"}"
+                } else {
+                    body = substr(body, 0, len(body) - 1) + ",\"id\":\"" + id + "\"}"
+                }
+            }
+            st["d|" + ref + "|" + id] = body
+            status = "200 OK"
+            out = "{\"ok\":true,\"record\":" + body + "}"
+        }
+        if method == "PATCH" && len(segs) >= 5 {
+            k := "d|" + ref + "|" + segs[4]
+            doc := st[k]
+            if doc == "" {
+                status = "404 Not Found"
+                out = "{\"ok\":false,\"error\":{\"message\":\"record not found\",\"type\":\"not_found\"}}"
+            } else {
+                mv, me := json_get(body, "._mtime")
+                mt := "0"
+                if me == "" { mt = trim(mv) }
+                nd := regex_replace(doc, "\"_mtime\":[0-9]+", "\"_mtime\":" + mt)
+                if nd == doc {
+                    nd = substr(doc, 0, len(doc) - 1) + ",\"_mtime\":" + mt + "}"
+                }
+                st[k] = nd
+                status = "200 OK"
+                out = "{\"ok\":true,\"record\":" + nd + "}"
+            }
+        }
+        if method == "DELETE" && len(segs) >= 5 {
+            k := "d|" + ref + "|" + segs[4]
+            if st[k] == "" {
+                status = "404 Not Found"
+                out = "{\"ok\":false,\"error\":{\"message\":\"record not found\",\"type\":\"not_found\"}}"
+            } else {
+                delete(st, k)
+                status = "200 OK"
+                out = "{\"ok\":true,\"deleted\":\"" + segs[4] + "\"}"
+            }
+        }
+    }
+    return "HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nContent-Length: " +
+        str(len(out)) + "\r\nConnection: close\r\n\r\n" + out
+}
+
+// One accept loop per fake server; docs stay in this goroutine's map so the
+// two servers share no state. ready <- 1 once listen() has bound.
+func fake_bkn(port, ready) {
+    srv := listen(port)
+    if srv <= 0 { return }
+    ready <- 1
+    st := make(map[string]string)
+    st["n"] = "0"
+    while true {
+        c := accept(srv)
+        if c <= 0 { continue }
+        socket_timeout(c, 10000)
+        req := fake_read(c)
+        if req != "" { write(c, fake_route(st, req)) }
+        close(c)
+    }
+}
+
+// --- assertions ---------------------------------------------------------------
+
+// fake_raw GETs one record and returns a field's raw JSON token ("" on miss).
+func fake_raw(base, id, field) {
+    stt, body, err := http_request("GET",
+        base + "/v1/store/m365/tasks/" + id, []string{}, "")
+    if err != "" || stt != 200 { return "" }
+    v, e := json_get(body, ".record" + field)
+    if e != "" { return "" }
+    return trim(v)
+}
+
+// fake_field is fake_raw with the JSON string unquoted via parse().
+func fake_field(base, id, field) {
+    return parse(fake_raw(base, id, field), "")
+}
+
+func fake_post(base, doc) {
+    _, _, _ = http_request("POST", base + "/v1/store/m365/tasks",
+        []string{"Content-Type: application/json"}, doc)
+}
+
+func main() {
+    ready := make(chan int)
+    go fake_bkn(18991, ready)
+    go fake_bkn(18992, ready)
+    r1 := <-ready
+    r2 := <-ready
+    assert(r1 == 1 && r2 == 1, "both fake bkn servers listening")
+
+    sync_local = "http://127.0.0.1:18991"
+    sync_local_tok = "t"
+    sync_remote = "http://127.0.0.1:18992"
+    sync_remote_tok = "t"
+    refs := []string{"m365/tasks"}
+
+    // 1. seed: plain app write — no _mtime (issue repro step 1)
+    stt, body, err := http_request("POST", sync_local + "/v1/store/m365/tasks",
+        []string{"Content-Type: application/json"}, "{\"title\":\"v1\",\"done\":false}")
+    assert(err == "" && stt == 200, "seed write reaches fake local")
+    id := ""
+    iv, ie := json_get(body, ".record.id")
+    if ie == "" { id = parse(iv, "") }
+    assert(id != "", "seed write minted an id")
+
+    // 2. first syncs: heal stamps the doc, pushes it, then converges
+    sync_pass_once(refs)
+    sync_pass_once(refs)
+
+    // 3. app edit: full-document upsert that drops _mtime (issue step 3)
+    fake_post(sync_local, "{\"id\":\"" + id + "\",\"title\":\"v1 EDITED\",\"done\":true}")
+
+    // now_ms() is cached per scheduler slice — sleep so the heal stamp is
+    // strictly newer than the first pass's (a same-tick tie would read as
+    // `same`, which is correct LWW but not what this test exercises).
+    sleep(50)
+
+    // 4. the regression: sync must PUSH the edit, not pull the stale remote
+    //    copy over it (issue step 4 observed pulled=1 + reverted content)
+    sync_pass_once(refs)
+    assert_eq_str(fake_field(sync_local, id, ".title"), "v1 EDITED",
+        "local edit survives sync")
+    assert_eq_str(fake_field(sync_remote, id, ".title"), "v1 EDITED",
+        "local edit reaches remote")
+    assert_eq_str(fake_raw(sync_local, id, ".done"), "true",
+        "local edit keeps done flag")
+
+    // 5. next pass converges — no re-heal/re-push flapping
+    sync_pass_once(refs)
+    assert_eq_str(fake_field(sync_remote, id, ".title"), "v1 EDITED",
+        "edit stable after follow-up sync")
+
+    // 6. facet 2: same id on both sides, _mtime nowhere — must resolve
+    //    deterministically (local wins) instead of eternal `same`
+    fake_post(sync_local, "{\"id\":\"shared-1\",\"title\":\"LOCAL\",\"done\":false}")
+    fake_post(sync_remote, "{\"id\":\"shared-1\",\"title\":\"REMOTE\",\"done\":true}")
+    sync_pass_once(refs)
+    assert_eq_str(fake_field(sync_local, "shared-1", ".title"), "LOCAL",
+        "both-missing: local copy kept")
+    assert_eq_str(fake_field(sync_remote, "shared-1", ".title"), "LOCAL",
+        "both-missing: local wins on remote too")
+
+    test_summary()
+}

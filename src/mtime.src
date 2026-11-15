@@ -29,6 +29,14 @@
 // horizon. Marker READS stay unbounded (load_tombs uses rec_mtime): a
 // marker is only ever written at ~now or ~horizon+1, and bounding it
 // would tie it against the record it must beat.
+//
+// heal_local_docs covers the other end of the _mtime lifecycle (#1):
+// _mtime is a sync-internal field apps never write, so a plain local
+// upsert leaves the stored record unstamped — rec_mtime() reads it as
+// epoch 0 and LWW pulls the older remote copy over the local edit.
+// Every local record without a usable _mtime was necessarily written
+// after the last sync pass that stamped it, so now_ms() is the freshest
+// honest timestamp.
 
 var mtime_skew_ms = 900000 // 15 min
 
@@ -126,4 +134,45 @@ func sync_write_rec(ref, rec, to_remote) (ok) {
         if doc != rec { post_doc(sync_remote, sync_remote_tok, ref, doc, "remote") }
     }
     return ok
+}
+
+// heal_local_docs runs BEFORE the merge (sync_one_ref calls it right
+// after the local fetch): the stamp is PATCHed onto the stored record —
+// a shallow merge, no document rewrite, and it fixes a present-but-
+// unusable _mtime the same way — and lr is updated from the response so
+// the merge sees the healed timestamp. Without the write-back the stamp
+// would not persist and every pass would re-heal and re-push the same
+// docs forever.
+func heal_local_docs(ref, lr) {
+    now := now_ms()
+    n := 0
+    j := 0
+    while j < len(lr) {
+        r := lr[j]
+        id := rec_id(r)
+        if id != "" && rec_mtime(r) <= 0 {
+            st, resp, err := api_patch(sync_local, sync_local_tok,
+                "/v1/store/" + ref + "/" + id,
+                "{\"_mtime\":" + str(now) + "}")
+            if (st == 200 || st == 201) && err == "" {
+                rec, e := json_get(resp, ".record")
+                if e == "" {
+                    lr[j] = rec
+                    n = n + 1
+                } else {
+                    sync_note_err("local", "PATCH /v1/store/" + ref + "/" + id +
+                        " (mtime heal)", st, "", resp)
+                }
+            } else {
+                // Loud, not silent: the record keeps its epoch-0 read and
+                // the pass reports the failed call like any other.
+                sync_note_err("local", "PATCH /v1/store/" + ref + "/" + id +
+                    " (mtime heal)", st, err, resp)
+            }
+        }
+        j = j + 1
+    }
+    if n > 0 {
+        eprintln(ref + ": stamped " + str(n) + " local record(s) missing _mtime")
+    }
 }

@@ -56,6 +56,12 @@ func api_delete(base, tok, path, side) {
     return ok
 }
 
+func api_patch(base, tok, path, body) {
+    st, resp, err := http_request("PATCH", base + path,
+        []string{"Authorization: Bearer " + tok, "Content-Type: application/json"}, body)
+    return st, resp, err
+}
+
 // One transport-level probe of the local endpoint per pass. A connect
 // failure means nothing is listening — say so once instead of reporting a
 // wall of per-call "connect" errors. Any HTTP status counts as alive:

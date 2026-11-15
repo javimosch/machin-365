@@ -172,6 +172,15 @@ func sync_one_ref(ref, tm, man, rman) {
     e0 := sync_err_count
     lr := fetch_records(sync_local, sync_local_tok, ref, "local")
     lok := sync_fetch_ok
+
+    // _mtime is a sync-internal stamp apps never write: a local record
+    // without a usable one is necessarily the freshest write sync has seen.
+    // Stamp it (and persist the stamp) BEFORE any mtime comparison — the
+    // provisioning gate, tombstone checks and the LWW merge all read
+    // rec_mtime — or LWW reads it as epoch 0 and the next pull silently
+    // reverts the local edit.
+    heal_local_docs(ref, lr)
+
     // Arm read-path self-provisioning for the remote fetch below: the
     // remote collection is only worth declaring when this pass would push
     // local records into it (#101).

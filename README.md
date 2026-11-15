@@ -112,6 +112,10 @@ build it from the machin-bkn repo (needs the `machin` toolchain).
 
 Replication is one pass per invocation (`--watch N` loops every N seconds),
 last-writer-wins on an app-level `_mtime` field (POST upserts by record id).
+Apps never write `_mtime` themselves — sync stamps it — so before merging,
+sync PATCHes `_mtime = now` onto any local record that lacks a usable one:
+an unstamped write is by definition the freshest thing sync has seen, and
+without the stamp it would lose LWW to epoch 0 and be silently reverted.
 Only one `sync` runs per suite home at a time — a second invocation
 (including a second `--watch`) fails fast with `sync already running
 (pid N)`; the `.sync.lock` dir in the suite home is reclaimed
