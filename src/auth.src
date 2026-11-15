@@ -1,7 +1,8 @@
 // auth.src — login against a machin-bkn server.
 // POST /v1/auth/login {email,password,org} → {ok, tokens:{access_token,…}}.
 // The access token is stored in config.json and sent by apps as a bearer;
-// refresh-token rotation is phase 2 (apps will call /v1/auth/refresh).
+// when it expires, auth_refresh_stored() trades the stored refresh_token
+// for a rotated pair via POST /v1/auth/refresh (sync does this automatically).
 
 type Tokens struct {
     access_token string
@@ -52,6 +53,82 @@ func auth_my_orgs(server, tok) (orgs, ok) {
         j = j + 1
     }
     return
+}
+
+// POST /v1/auth/refresh {refresh_token} → rotated tokens. Same envelope as
+// login; rotation is unconditional server-side, so the returned
+// refresh_token MUST replace the stored one — the old one is dead.
+// msg "" on success, otherwise transport error or "HTTP <status> <body>".
+func auth_refresh_call(server, refresh) (lr, msg) {
+    lr = LoginResp{}
+    msg = ""
+    body := "{\"refresh_token\":" + json(refresh) + "}"
+    st, resp, err := http_request("POST", server + "/v1/auth/refresh",
+        []string{"Content-Type: application/json"}, body)
+    if err != "" { msg = err  return }
+    if st != 200 { msg = "HTTP " + str(st) + " " + resp  return }
+    lr = parse(resp, LoginResp{})
+    if lr.tokens.access_token == "" { msg = "refresh response missing access_token" }
+    return
+}
+
+// Exchange the config's stored refresh_token for a rotated pair and persist
+// BOTH tokens (rotation kills the old refresh token the moment this
+// succeeds). Returns the new access token. ok=false when there is nothing
+// to refresh with or the server refused; fatal=true means the stored
+// refresh token is dead — retrying cannot help until the next auth login.
+// fatal=false is a transport failure, worth another attempt later.
+func auth_refresh_stored(server) (ntok, ok, fatal) {
+    ntok = ""
+    ok = false
+    fatal = false
+    c := load_config()
+    if c.refresh_token == "" { fatal = true  return }
+    lr, msg := auth_refresh_call(server, c.refresh_token)
+    if msg != "" {
+        // The server answered with a client error: the stored refresh token
+        // is dead (or the request itself is wrong) — retrying cannot help.
+        // Transport errors and 5xx/429 are transient, worth another pass.
+        if has_prefix(msg, "HTTP 4") && !has_prefix(msg, "HTTP 429") { fatal = true }
+        eprintln("machin-365: token refresh failed: " + msg)
+        return
+    }
+    c.token = lr.tokens.access_token
+    if lr.tokens.refresh_token != "" { c.refresh_token = lr.tokens.refresh_token }
+    save_config(c)
+    ntok = c.token
+    ok = true
+    return
+}
+
+// exp claim (unix seconds) of a JWT access token. The payload segment is
+// plain base64url JSON — decoded for a local expiry hint only; the signature
+// is NOT verified here (the server stays the verifier). 0 when the token is
+// not a readable JWT.
+func jwt_exp(token) (exp) {
+    exp = 0
+    p1 := index(token, ".")
+    if p1 <= 0 { return exp }
+    rest := substr(token, p1 + 1, len(token))
+    p2 := index(rest, ".")
+    if p2 <= 0 { return exp }
+    v, e := json_get(base64_decode(substr(rest, 0, p2)), ".exp")
+    if e != "" { return exp }
+    return parse_int(trim(v))
+}
+
+// true when a failed call looks like a credential problem a token refresh
+// could fix. 401 always qualifies; 403 qualifies only for the org-scope
+// refusal both bkn builds give an unverifiable or org-less token — other
+// 403s (private collections, disabled users) cannot be fixed by refreshing.
+func auth_class_err(st, resp) {
+    if st == 401 { return true }
+    if st != 403 { return false }
+    m, e := json_get(resp, ".error.message")
+    if e != "" { return false }
+    mm := parse(m, "")
+    return contains(mm, "sign in") || contains(mm, "scoped to an organization") ||
+        contains(mm, "expired")
 }
 
 func join_strs(list, sep) {
@@ -266,8 +343,24 @@ func cmd_auth_status() {
     }
     if c.token != "" {
         println("token:   present")
+        exp := jwt_exp(c.token)
+        if exp > 0 {
+            left := exp - now_ms() / 1000
+            if left <= 0 {
+                println("         expired — sync refreshes it automatically, or: auth login")
+            } else if left >= 3600 {
+                println("         expires in " + str(left / 3600) + "h")
+            } else if left >= 60 {
+                println("         expires in " + str(left / 60) + "m")
+            } else {
+                println("         expires in " + str(left) + "s")
+            }
+        }
     } else {
         println("token:   none")
+    }
+    if c.refresh_token != "" {
+        println("refresh: present")
     }
 }
 
