@@ -1,0 +1,61 @@
+// provision.src — remote collection self-provisioning for sync.
+//
+// bkn lets an org-scoped member declare a collection the token cannot yet
+// see: PUT /v1/store/<ref> with an org-bounded access policy. That is what
+// makes "signup, install, sync" work on a fresh open-signup deployment —
+// without it every undeclared collection fails each pass with 403
+// "administered privately". sync.src calls remote_provision() once per ref
+// per pass after that exact refusal, then retries the failed call; a
+// refused PUT (admin-declared collection, non-org deployment, org-less
+// token) just keeps the original error.
+
+// Refs whose provisioning PUT was already attempted this pass — the server
+// refuses a second declaration anyway, so one try per ref per pass is
+// enough (a fresh pass, e.g. after token refresh, may carry an org).
+var sync_provision_tried = []string{}
+
+// true when a failed store call is the undeclared/private-collection refusal
+// an org member can repair by self-declaring (bkn: "this collection is
+// administered privately"). Other 403s — org-scope sign-in refusals,
+// admin-only policies on already-declared collections — are not fixable by
+// a declaration PUT and fall through to the normal error path.
+func is_private_admin_err(st, resp) {
+    if st != 403 { return false }
+    m, e := json_get(resp, ".error.message")
+    if e != "" { return false }
+    return contains(parse(m, ""), "administered privately")
+}
+
+// org claim of the remote access token; "" for org-less or non-JWT tokens.
+// Same unsigned payload read as jwt_exp — a presence check only, the server
+// stays the verifier. bkn gates self-service PUTs on this claim, so an
+// empty result means the PUT could only be refused: skip it quietly.
+func jwt_org(token) {
+    p1 := index(token, ".")
+    if p1 <= 0 { return "" }
+    rest := substr(token, p1 + 1, len(token))
+    p2 := index(rest, ".")
+    if p2 <= 0 { return "" }
+    v, e := json_get(base64_decode(substr(rest, 0, p2)), ".org")
+    if e != "" { return "" }
+    return parse(v, "")
+}
+
+func api_put(base, tok, path, body) {
+    st, resp, err := http_request("PUT", base + path,
+        []string{"Authorization: Bearer " + tok, "Content-Type: application/json"}, body)
+    return st, resp, err
+}
+
+// PUT /v1/store/<ref> declaring the default org-wide policy. Returns true
+// only when the server accepted the declaration.
+func remote_provision(ref) {
+    if has_ref(sync_provision_tried, ref) { return false }
+    sync_provision_tried = append(sync_provision_tried, ref)
+    if jwt_org(sync_remote_tok) == "" { return false }
+    st, _, err := api_put(sync_remote, sync_remote_tok, "/v1/store/" + ref,
+        "{\"access\":{\"rules\":{\"read\":\"org\",\"create\":\"org\",\"update\":\"org\",\"delete\":\"org\"},\"org_field\":\"org\"}}")
+    if err != "" || (st != 200 && st != 201) { return false }
+    eprintln("machin-365: declared remote collection " + ref)
+    return true
+}
