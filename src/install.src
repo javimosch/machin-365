@@ -63,6 +63,57 @@ func platform() {
     return "linux-" + mm
 }
 
+// desktop_quote renders s as one double-quoted token in a .desktop Exec
+// line — the spec escapes ", `, $ and \ inside double quotes.
+func desktop_quote(s) {
+    s = replace(s, "\\", "\\\\")
+    s = replace(s, "\"", "\\\"")
+    s = replace(s, "`", "\\`")
+    s = replace(s, "$", "\\$")
+    return "\"" + s + "\""
+}
+
+// self_path resolves the running suite binary to an absolute path so the
+// .desktop Exec line does not depend on the installing shell's PATH or cwd.
+// On Linux, exec() runs through a shell whose parent is this process, so
+// /proc/$PPID/exe is our own resolved binary — canonical even when argv[0]
+// is a bare name, a relative path, or a symlink. Elsewhere argv[0] is
+// resolved through PATH (bare name) or anchored at the cwd (relative path);
+// the last resort is argv[0] verbatim.
+func self_path() (p) {
+    p = args()[0]
+    _, u, _ := exec("uname -s")
+    if to_lower(trim(u)) == "linux" {
+        _, r, _ := exec("readlink /proc/$PPID/exe")
+        r = trim(r)
+        // readlink appends " (deleted)" when the binary was unlinked while
+        // running — the path itself is still what we want to record.
+        if contains(r, " (deleted)") { r = substr(r, 0, index(r, " (deleted)")) }
+        if r != "" { return r }
+    }
+    if index(p, "/") < 0 {
+        _, o, _ := exec("command -v " + shell_quote(p))
+        if trim(o) != "" { return trim(o) }
+        return p
+    }
+    if substr(p, 0, 1) == "/" { return p }
+    _, d, _ := exec("dirname " + shell_quote(p))
+    _, b, _ := exec("basename " + shell_quote(p))
+    _, pd, _ := exec("cd " + shell_quote(trim(d)) + " && pwd")
+    if trim(pd) == "" { return p }
+    return trim(pd) + "/" + trim(b)
+}
+
+// desktop_name namespaces the .desktop filename per suite home so installs
+// under different MACHIN_365_HOME values don't overwrite each other. The
+// default home keeps the historic machin-365-<id>.desktop name.
+func desktop_name(id) {
+    if suite_home() == env("HOME") + "/.local/share/machin-365" {
+        return "machin-365-" + id + ".desktop"
+    }
+    return "machin-365-" + id + "-" + substr(sha256(suite_home()), 0, 12) + ".desktop"
+}
+
 func write_desktop_file(id, app, bin) {
     d := desktop_dir()
     system("mkdir -p '" + d + "'")
@@ -70,11 +121,28 @@ func write_desktop_file(id, app, bin) {
     body = body + "Type=Application\n"
     body = body + "Name=" + app.name + "\n"
     body = body + "Comment=" + app.desc + "\n"
-    body = body + "Exec=" + bin + "\n"
+    // Launch through `run`, not the app binary: a menu launch then gets
+    // service autostart and the suite home baked in below — the same path
+    // as `machin-365 run <id>` from a shell.
+    body = body + "Exec=" + desktop_quote(self_path()) + " run " + desktop_quote(id) + "\n"
+    body = body + "Environment=MACHIN_365_HOME=" + suite_home() + "\n"
+    bp := env("MACHIN_365_BKN_PORT")
+    if bp != "" { body = body + "Environment=MACHIN_365_BKN_PORT=" + bp + "\n" }
     body = body + "Icon=applications-science\n"
     body = body + "Categories=Office;\n"
     body = body + "Terminal=false\n"
-    write_file(d + "/machin-365-" + id + ".desktop", body)
+    fname := desktop_name(id)
+    write_file(d + "/" + fname, body)
+    // An entry written by an older machin-365 for THIS home used the
+    // un-namespaced name and pointed straight at the app binary; it is
+    // superseded now. Only remove it when its Exec is our bin — the same
+    // filename may belong to a different suite home's install. Entries for
+    // other homes (namespaced, or the default home's un-namespaced one)
+    // are left alone.
+    legacy := d + "/machin-365-" + id + ".desktop"
+    if fname != legacy && contains(read_file(legacy), "Exec=" + bin) {
+        remove(legacy)
+    }
 }
 
 func install_bin(id, app, src) (code) {
@@ -173,7 +241,9 @@ func cmd_install(a) (code) {
 // rather than let the app talk to the wrong home's data layer.
 func ensure_service() (code) {
     code = 0
-    if file_size(bkn_bin()) == 0 { return code }
+    // file_size is -1 for a missing path, 0 for an empty one — both mean
+    // "no bkn installed", so the check must be <= 0, not == 0.
+    if file_size(bkn_bin()) <= 0 { return code }
     if bkn_owner() == "ours" { return code }
     return cmd_service_start()
 }

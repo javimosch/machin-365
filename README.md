@@ -98,7 +98,9 @@ $MACHIN_365_HOME (default ~/.local/share/machin-365)
 ```
 
 Installed apps also get a `.desktop` entry, so they appear in the OS app
-menu — no custom launcher needed.
+menu — no custom launcher needed. Entries launch through `machin-365 run`
+(service autostart included) with `MACHIN_365_HOME` baked in, and are
+namespaced per suite home so multiple homes can coexist.
 
 ## Catalog
 
