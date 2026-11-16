@@ -30,7 +30,19 @@ func catalog_text() {
     return catalog_json()
 }
 
-func load_catalog() { return parse(catalog_text(), Catalog{}) }
+func load_catalog() {
+    p := env("MACHIN_365_CATALOG")
+    cat := parse(catalog_text(), Catalog{})
+    // An explicit override that reads empty or parses to zero apps is a
+    // broken pointer, not an empty catalog — fail loudly like
+    // `catalog --refresh` does for a bad server catalog. The implicit
+    // snapshot/bundle path keeps the silent fall-through.
+    if p != "" && len(cat.apps) == 0 {
+        eprintln("machin-365: catalog override " + p + " unreadable/invalid — fix MACHIN_365_CATALOG or unset it")
+        exit(1)
+    }
+    return cat
+}
 
 func find_app(cat, id) (a, found) {
     a = CatApp{id: "", name: "", kind: "", repo: "", version: "", bin: "", desc: "", assets: []Asset{}}
