@@ -15,6 +15,7 @@ func cmd_config() {
 
 func cmd_init() {
     system("mkdir -p '" + suite_home() + "' '" + apps_dir() + "' '" + data_root() + "' '" + desktop_dir() + "'")
+    system("chmod 700 '" + suite_home() + "'")
     p := config_path()
     s := read_file(p)
     if s == "" {

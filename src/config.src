@@ -1,6 +1,7 @@
 // config.src — suite config: which server, who is logged in.
-// Stored as JSON at <suite_home>/config.json; tokens live here owner-only
-// by directory permissions, never printed by `config` or `auth status`.
+// Stored as JSON at <suite_home>/config.json. The suite home is kept at
+// mode 700 and the file is written mode 600 via temp+rename, so tokens
+// stay owner-only; never printed by `config` or `auth status`.
 
 type SuiteConfig struct {
     server string
@@ -22,5 +23,11 @@ func load_config() (c) {
 
 func save_config(c) {
     system("mkdir -p '" + suite_home() + "'")
-    write_file(config_path(), json(c))
+    system("chmod 700 '" + suite_home() + "'")
+    // temp+rename: the file is never world-readable, not even between
+    // create and chmod (write_file alone would leave it at umask 0644)
+    tmp := suite_home() + "/.config.json.tmp"
+    write_file(tmp, json(c))
+    system("chmod 600 '" + tmp + "'")
+    system("mv -f '" + tmp + "' '" + config_path() + "'")
 }
