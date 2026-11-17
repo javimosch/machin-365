@@ -37,7 +37,7 @@ machin-365 run tasks                # launch (also in your OS app menu)
 machin-365 auth login --server URL --email E --password P [--org SLUG]
 machin-365 auth status | logout
 machin-365 config                   # paths + account state
-machin-365 service install --bin ./bkn   # install local bkn binary
+machin-365 service install --bin ./bkn   # install local bkn (probes it runs + serves)
 machin-365 service start|stop|status     # manage local bkn (127.0.0.1:17630)
 machin-365 sync                     # replicate local bkn <-> remote bkn
 machin-365 sync --watch 15          # continuous replication every 15s
@@ -55,7 +55,7 @@ machin-365 auth signup --server https://machin-bkn.vps1.intrane.fr \
     --email you@example.com --password a-good-password
 machin-365 catalog --refresh   # when the server hosts /catalog.json
 machin-365 install tasks
-machin-365 service install --bin ./bkn && machin-365 service start
+machin-365 service install --bin ./bkn   # install verifies + starts the local bkn
 machin-365 sync --collections m365/tasks   # machin-bkn has no /v1/collections route
 machin-365 run tasks            # add a task, sync, see it on the server
 ```

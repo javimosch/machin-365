@@ -182,9 +182,13 @@ func loader_failure(err, path) {
 // A load failure happens before main() regardless of argv, so one probe
 // covers --version/--help alike; an app-level exit or a watchdog timeout
 // (GUI app, no display) is not an install failure.
+// BKN_DATA pins the probe's database to a suite-home scratch file: a
+// bkn-family binary opens and migrates its db before dispatching even
+// `--version`, which would otherwise drop bkn.db/-wal/-shm into whatever
+// cwd the user ran install from. App binaries ignore the variable.
 func probe_exec(path) (err) {
     err = ""
-    cmd := shell_quote(path) + " --version" +
+    cmd := "BKN_DATA='" + suite_home() + "/.probe-bkn.db' " + shell_quote(path) + " --version" +
         " & p=$!; (sleep 5; kill $p 2>/dev/null; sleep 2; kill -9 $p 2>/dev/null) & w=$!;" +
         " wait $p 2>/dev/null; kill $w 2>/dev/null; kill -9 $w 2>/dev/null"
     _, _, serr := exec(cmd)
