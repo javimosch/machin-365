@@ -1,0 +1,78 @@
+// syncargs.src — `sync` flag parsing. Flags are validated BEFORE config or
+// the network are touched: a mistyped flag must fail loudly (exit 2), never
+// degrade into a silent no-op sync that reports success while replicating
+// nothing. Both "--flag value" and "--flag=value" forms are accepted; any
+// other "--*" token or bare positional argument is a usage error.
+
+// split an arg of the form "--name=value" into name and inline value.
+// has_eq is false for a bare "--name" (no '=' present).
+func flag_eq(arg) (name, val, has_eq) {
+    name = arg
+    val = ""
+    has_eq = false
+    eq := index(arg, "=")
+    if eq > 0 {
+        name = substr(arg, 0, eq)
+        val = substr(arg, eq + 1, len(arg))
+        has_eq = true
+    }
+    return
+}
+
+// Parse and validate `sync` flags. Returns the --watch interval in seconds
+// (0 = one-shot), the --collections/--coll value ("" = flag absent), whether
+// the collections flag was given, and a usage-error message ("" = ok).
+func sync_parse_args(a) (watch, coll_arg, have_coll, err_msg) {
+    watch = 0
+    coll_arg = ""
+    have_coll = false
+    err_msg = ""
+    i := 2
+    while i < len(a) {
+        arg := a[i]
+        if !has_prefix(arg, "--") {
+            err_msg = "unexpected argument '" + arg + "'"
+            return
+        }
+        name, val, has_eq := flag_eq(arg)
+        if name == "--collections" || name == "--coll" {
+            have_coll = true
+            if has_eq {
+                coll_arg = val
+            } else {
+                if i + 1 >= len(a) || has_prefix(a[i+1], "--") {
+                    err_msg = name + " requires a value" +
+                        " (e.g. --collections ns/coll,ns/coll2)"
+                    return
+                }
+                coll_arg = a[i+1]
+                i = i + 1
+            }
+        } else if name == "--watch" {
+            watch = 15
+            if has_eq {
+                n := parse_int(val)
+                if n <= 0 {
+                    err_msg = "--watch requires a positive interval in seconds"
+                    return
+                }
+                watch = n
+            } else if i + 1 < len(a) && !has_prefix(a[i+1], "--") {
+                n := parse_int(a[i+1])
+                if n > 0 {
+                    watch = n
+                    i = i + 1
+                }
+            }
+        } else {
+            err_msg = "unknown flag '" + arg + "'"
+            return
+        }
+        i = i + 1
+    }
+    if have_coll && trim(coll_arg) == "" {
+        err_msg = "--collections requires a value" +
+            " (e.g. --collections ns/coll,ns/coll2)"
+    }
+    return
+}
