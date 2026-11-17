@@ -156,6 +156,14 @@ func install_bin(id, app, src) (code) {
     }
     write_file_bytes(dst, b)
     system("chmod +x '" + dst + "'")
+    detail := probe_binary(dst)
+    if detail != "" {
+        remove(dst)
+        eprintln("machin-365: " + app.name + " " + app.version +
+            " cannot run on this host — not installed")
+        eprintln("  " + detail)
+        return 1
+    }
     reg := load_registry()
     reg = upsert_installed(reg, Installed{id: id, version: app.version, bin: dst, installed_at: str(now_ms())})
     save_registry(reg)
@@ -185,6 +193,14 @@ func install_asset(id, app, asset) (code) {
     system("mkdir -p '" + app_bin_dir(id) + "'")
     system("mv -f '" + tmp + "' '" + dst + "'")
     system("chmod +x '" + dst + "'")
+    detail := probe_binary(dst)
+    if detail != "" {
+        remove(dst)
+        eprintln("machin-365: " + app.name + " " + app.version +
+            " cannot run on this host — not installed")
+        eprintln("  " + detail)
+        return 1
+    }
     reg := load_registry()
     reg = upsert_installed(reg, Installed{id: id, version: app.version, bin: dst, installed_at: str(now_ms())})
     save_registry(reg)
@@ -271,6 +287,16 @@ func cmd_run(a) (code) {
     t, found := find_installed(r, id)
     if !found {
         eprintln("machin-365: '" + id + "' is not installed — run: machin-365 install " + id)
+        return 1
+    }
+    // Static-only preflight: a binary that cannot start on this host
+    // (wrong arch, missing interpreter) fails here with suite context
+    // instead of a raw loader error. GLIBC/.so failures still surface
+    // from the app itself — install is where the full probe runs.
+    pd := probe_static(t.bin)
+    if pd != "" {
+        eprintln("machin-365: '" + id + "' cannot run on this host — " + pd)
+        eprintln("machin-365: reinstall for this platform: machin-365 install " + id)
         return 1
     }
     // system() inherits stdio, so the app's stdout/stderr reach the user
