@@ -39,6 +39,7 @@ func dispatch(a) (code) {
     if cmd == "init" { cmd_init()  return code }
     if cmd == "catalog" || cmd == "apps" { cmd_catalog(a)  return code }
     if cmd == "install" { return cmd_install(a) }
+    if cmd == "uninstall" { return cmd_uninstall(a) }
     if cmd == "run" { return cmd_run(a) }
     if cmd == "auth" {
         if len(a) > 2 && a[2] == "login" { return cmd_auth_login(a) }
