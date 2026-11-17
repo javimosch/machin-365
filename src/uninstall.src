@@ -1,0 +1,97 @@
+// uninstall.src — remove an installed app: the apps/<id>/ tree, the
+// installed.json registry entry and this suite home's .desktop entries.
+// data/<id>/ is the app's user store — always kept and reported, never
+// deleted (a --purge flag can cover that case later).
+
+func drop_installed(r, id) {
+    nr := InstallRegistry{apps: []Installed{}}
+    i := 0
+    while i < len(r.apps) {
+        if r.apps[i].id != id { nr.apps = append(nr.apps, r.apps[i]) }
+        i = i + 1
+    }
+    return nr
+}
+
+// desktop_owned lists the .desktop paths in desktop_dir() belonging to THIS
+// suite home for id. desktop_name(id) is ours by construction; any other
+// machin-365-<id>*.desktop counts only when its contents point back at this
+// home — the baked-in MACHIN_365_HOME marker or an Exec path into
+// apps/<id>/ — so entries owned by other suite homes are left alone.
+func desktop_owned(id) (paths) {
+    paths = []string{}
+    d := desktop_dir()
+    names := list_dir(d)
+    i := 0
+    while i < len(names) {
+        n := names[i]
+        if has_prefix(n, "machin-365-" + id + ".desktop") ||
+            has_prefix(n, "machin-365-" + id + "-") {
+            own := n == desktop_name(id)
+            if !own {
+                c := read_file(d + "/" + n)
+                own = contains(c, "MACHIN_365_HOME=" + suite_home() + "\n") ||
+                    contains(c, apps_dir() + "/" + id + "/")
+            }
+            if own { paths = append(paths, d + "/" + n) }
+        }
+        i = i + 1
+    }
+    return paths
+}
+
+func cmd_uninstall(a) (code) {
+    code = 0
+    id := ""
+    i := 2
+    while i < len(a) {
+        if id == "" && !has_prefix(a[i], "-") { id = a[i] }
+        i = i + 1
+    }
+    if id == "" {
+        eprintln("usage: machin-365 uninstall <app-id>")
+        return 2
+    }
+    reg := load_registry()
+    t, found := find_installed(reg, id)
+    adir := is_dir(app_dir(id))
+    desks := desktop_owned(id)
+    if !found && !adir && len(desks) == 0 {
+        eprintln("machin-365: '" + id + "' is not installed")
+        return 1
+    }
+    ver := ""
+    if found {
+        ver = t.version
+    } else {
+        cat := load_catalog()
+        app, afound := find_app(cat, id)
+        if afound { ver = app.version }
+    }
+    msg := "uninstalled " + id
+    if ver != "" { msg = msg + " " + ver }
+    println(msg)
+    if adir {
+        system("rm -rf '" + app_dir(id) + "'")
+        println("  removed " + app_dir(id) + "/")
+    }
+    if found {
+        save_registry(drop_installed(reg, id))
+        println("  removed registry entry from " + installed_path())
+    }
+    j := 0
+    while j < len(desks) {
+        remove(desks[j])
+        println("  removed " + desks[j])
+        j = j + 1
+    }
+    dp := data_root() + "/" + id
+    if is_dir(dp) {
+        if len(list_dir(dp)) > 0 {
+            eprintln("machin-365: note: " + dp + " holds user data — kept; " +
+                "delete it manually to purge")
+        }
+        println("  kept " + dp + "/ (user data)")
+    }
+    return code
+}

@@ -32,6 +32,7 @@ cd machin-365 && ./build.sh         # static binary → build/machin-365
 machin-365 catalog [--refresh]      # apps + install state; --refresh pulls ${server}/catalog.json
 machin-365 install tasks            # release asset, or:
 machin-365 install tasks --bin ./build/machin-tasks   # local build
+machin-365 uninstall tasks          # remove app; data/tasks/ is kept
 machin-365 run tasks                # launch (also in your OS app menu)
 machin-365 auth login --server URL --email E --password P [--org SLUG]
 machin-365 auth status | logout
