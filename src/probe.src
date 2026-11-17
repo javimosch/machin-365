@@ -1,0 +1,234 @@
+// probe.src — install-time check that an app binary can actually run on
+// this host. sha256 proves the bytes are what was published; it says
+// nothing about whether the OS can start them — wrong arch, a missing
+// ELF interpreter or a GLIBC_x.y newer than the host's all install
+// "successfully" and then die at `run` with a raw loader error.
+// probe_binary() runs after the bytes land in apps/<id>/bin/ and before
+// the install is declared done; probe_static() is the exec-free subset
+// `run` uses to fail early with suite context instead of a loader dump.
+
+// ru reads n bytes at off in b as an unsigned int, little-endian (be=0)
+// or big-endian (be=1). -1 on out-of-range.
+func ru(b, off, n, be) {
+    v := 0
+    i := 0
+    if be == 1 {
+        while i < n {
+            x := byte_at(b, off + i)
+            if x < 0 { return -1 }
+            v = v * 256 + x
+            i = i + 1
+        }
+    } else {
+        i = n - 1
+        while i >= 0 {
+            x := byte_at(b, off + i)
+            if x < 0 { return -1 }
+            v = v * 256 + x
+            i = i - 1
+        }
+    }
+    return v
+}
+
+type ElfHead struct {
+    is_elf int
+    machine int
+    interp string
+    // no_interp=1 only when the program headers parsed cleanly and no
+    // PT_INTERP exists — a provably static ELF. 0 means dynamic, or the
+    // headers could not be parsed (the exec probe then decides).
+    no_interp int
+}
+
+// elf_head reads the ELF header + program headers and reports the
+// e_machine and PT_INTERP interpreter path. is_elf=0 for anything that is
+// not ELF (scripts, Mach-O, …) — those fall through to the exec probe.
+func elf_head(path) (h) {
+    h = ElfHead{is_elf: 0, machine: 0, interp: "", no_interp: 1}
+    hdr := read_file_at(path, 0, 64)
+    if len(hdr) < 16 { return h }
+    if byte_at(hdr, 0) != 0x7f || byte_at(hdr, 1) != 0x45 ||
+        byte_at(hdr, 2) != 0x4c || byte_at(hdr, 3) != 0x46 { return h }
+    h.is_elf = 1
+    h.no_interp = 0
+    be := 0
+    if byte_at(hdr, 5) == 2 { be = 1 }
+    h.machine = ru(hdr, 18, 2, be)
+    cls := byte_at(hdr, 4)
+    phoff := -1
+    phentsize := 0
+    phnum := 0
+    if cls == 2 {
+        phoff = ru(hdr, 0x20, 8, be)
+        phentsize = ru(hdr, 0x36, 2, be)
+        phnum = ru(hdr, 0x38, 2, be)
+    } else if cls == 1 {
+        phoff = ru(hdr, 0x1c, 4, be)
+        phentsize = ru(hdr, 0x2a, 2, be)
+        phnum = ru(hdr, 0x2c, 2, be)
+    }
+    if phoff < 0 || phentsize < 4 || phentsize > 4096 || phnum <= 0 || phnum > 1024 {
+        return h
+    }
+    ph := read_file_at(path, phoff, phentsize * phnum)
+    if len(ph) < phentsize { return h }
+    i := 0
+    while i < phnum {
+        base := i * phentsize
+        if ru(ph, base, 4, be) == 3 {
+            // PT_INTERP: p_offset/p_filesz point at the interpreter path.
+            poff := 0
+            psize := 0
+            if cls == 2 {
+                poff = ru(ph, base + 8, 8, be)
+                psize = ru(ph, base + 0x20, 8, be)
+            } else {
+                poff = ru(ph, base + 4, 4, be)
+                psize = ru(ph, base + 0x10, 4, be)
+            }
+            if poff >= 0 && psize > 0 && psize < 4096 {
+                ib := read_file_at(path, poff, psize)
+                if len(ib) == psize { h.interp = bytes_str(ib) }
+            }
+            h.no_interp = 0
+            return h
+        }
+        i = i + 1
+    }
+    h.no_interp = 1
+    return h
+}
+
+// host_machine maps uname -m to the ELF e_machine it produces; 0 when the
+// arch is unknown (the machine check is then skipped).
+func host_machine() {
+    _, m, _ := exec("uname -m")
+    mm := to_lower(trim(m))
+    if mm == "x86_64" || mm == "amd64" { return 62 }
+    if mm == "i386" || mm == "i486" || mm == "i586" || mm == "i686" { return 3 }
+    if mm == "aarch64" || mm == "arm64" { return 183 }
+    if has_prefix(mm, "arm") { return 40 }
+    if mm == "riscv64" { return 243 }
+    if mm == "loongarch64" { return 258 }
+    if mm == "ppc64le" || mm == "ppc64" { return 21 }
+    if mm == "s390x" { return 22 }
+    return 0
+}
+
+// em_name renders an e_machine value for diagnostics.
+func em_name(m) {
+    if m == 62 { return "x86-64" }
+    if m == 3 { return "x86" }
+    if m == 183 { return "aarch64" }
+    if m == 40 { return "arm" }
+    if m == 243 { return "riscv64" }
+    if m == 258 { return "loongarch64" }
+    if m == 21 { return "ppc64" }
+    if m == 22 { return "s390x" }
+    return "machine " + str(m)
+}
+
+// shebang_interp returns the interpreter path of a #! script, "" for
+// non-scripts and for `#!…/env X` (env resolves X via PATH — the exec
+// probe covers it).
+func shebang_interp(path) {
+    b := read_file_at(path, 0, 512)
+    s := bytes_str(b)
+    if !has_prefix(s, "#!") { return "" }
+    nl := index(s, "\n")
+    if nl >= 0 { s = substr(s, 0, nl) }
+    cr := index(s, "\r")
+    if cr >= 0 { s = substr(s, 0, cr) }
+    s = trim(s)
+    if len(s) <= 2 { return "" }
+    rest := trim(substr(s, 2, len(s) - 2))
+    end := len(rest)
+    i := 0
+    while i < len(rest) {
+        c := substr(rest, i, 1)
+        if c == " " || c == "\t" { end = i  break }
+        i = i + 1
+    }
+    tok := substr(rest, 0, end)
+    if tok == "/usr/bin/env" || tok == "/bin/env" { return "" }
+    return tok
+}
+
+// loader_failure reports whether stderr looks like the OS refusing to
+// start the binary — loader/interpreter errors — as opposed to the app
+// itself exiting non-zero (GUI app, no display, bad args), which must
+// not fail an install. Kept to loader-specific phrasing so app diagnostics
+// cannot trip it.
+func loader_failure(err, path) {
+    l := to_lower(err)
+    if l == "" { return false }
+    if contains(l, "error while loading shared libraries") { return true }
+    if contains(l, "cannot open shared object file") { return true }
+    if contains(l, "cannot execute binary file") { return true }
+    if contains(l, "exec format error") { return true }
+    if contains(l, "bad interpreter") { return true }
+    if contains(l, "cannot execute: required file not found") { return true }
+    if contains(l, "symbol lookup error") { return true }
+    // versioned-symbol need failure, e.g. libm.so.6: version `GLIBC_2.43' not found
+    if contains(l, "version `") && contains(l, "not found") { return true }
+    // dash/bash collapse exec-ENOENT to "<argv0>: not found"
+    if contains(l, to_lower(path) + ": not found") { return true }
+    return false
+}
+
+// probe_exec runs `<bin> --version` under a watchdog and returns the
+// loader diagnostic when the OS cannot start the binary, "" otherwise.
+// A load failure happens before main() regardless of argv, so one probe
+// covers --version/--help alike; an app-level exit or a watchdog timeout
+// (GUI app, no display) is not an install failure.
+func probe_exec(path) (err) {
+    err = ""
+    cmd := shell_quote(path) + " --version" +
+        " & p=$!; (sleep 5; kill $p 2>/dev/null; sleep 2; kill -9 $p 2>/dev/null) & w=$!;" +
+        " wait $p 2>/dev/null; kill $w 2>/dev/null; kill -9 $w 2>/dev/null"
+    _, _, serr := exec(cmd)
+    if loader_failure(serr, path) {
+        s := trim(serr)
+        if len(s) > 400 { s = substr(s, 0, 400) + "..." }
+        return s
+    }
+    return ""
+}
+
+// probe_static is the exec-free half of the check: ELF architecture and
+// interpreter presence, script interpreter presence. "" means nothing
+// statically wrong — it does NOT prove the binary runs (GLIBC version
+// needs and missing .so files only show at exec time).
+func probe_static(path) (detail) {
+    detail = ""
+    if file_size(path) <= 0 { return "empty or unreadable file" }
+    h := elf_head(path)
+    if h.is_elf == 1 {
+        hm := host_machine()
+        if hm != 0 && h.machine > 0 && h.machine != hm && !(hm == 62 && h.machine == 3) {
+            return "wrong architecture: ELF is " + em_name(h.machine) +
+                ", this host is " + em_name(hm)
+        }
+        if h.interp != "" && file_size(h.interp) <= 0 {
+            return "missing ELF interpreter: " + h.interp
+        }
+        return ""
+    }
+    si := shebang_interp(path)
+    if si != "" && file_size(si) <= 0 {
+        return "missing script interpreter: " + si
+    }
+    return ""
+}
+
+// probe_binary is the full install-time check: static checks first, then
+// the exec probe — skipped only for a provably static ELF, which has no
+// loader to fail.
+func probe_binary(path) (detail) {
+    detail = probe_static(path)
+    if detail != "" { return detail }
+    h := elf_head(path)
+    if h.is_elf == 1 && h.no_interp == 1 { return "" }
+    return probe_exec(path)
+}
