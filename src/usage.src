@@ -17,7 +17,7 @@ func print_usage() {
     println("  auth status                   show server/account/token state")
     println("  auth logout                   clear stored tokens")
     println("  config                        show suite paths and account state")
-    println("  service install [--bin PATH]  install the local bkn binary")
+    println("  service install [--bin PATH]  install the local bkn binary (probes + starts it)")
     println("  service start|stop|status     manage the local bkn instance")
     println("  sync [--collections a/b,c/d] [--watch [secs]]")
     println("                               replicate local bkn <-> remote bkn")

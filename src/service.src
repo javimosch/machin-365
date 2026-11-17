@@ -51,10 +51,111 @@ func cmd_service_install(a) (code) {
         eprintln("machin-365: cannot read " + src)
         return 1
     }
-    write_file_bytes(bkn_bin(), b)
-    system("chmod +x '" + bkn_bin() + "'")
+    // Snapshot the previous install so a failed verification restores it —
+    // a rejected install leaves the suite exactly as it was.
+    oldb := read_file_bytes(bkn_bin())
+    had_old := file_size(bkn_bin()) > 0
+    if write_bkn_bin(b) != 0 {
+        eprintln("machin-365: cannot write " + bkn_bin())
+        return 1
+    }
+    // Same gate `install` applies to app binaries: the bytes must actually
+    // run on this host (right arch, interpreter present, no loader error)
+    // before they are claimed installed.
+    detail := probe_binary(bkn_bin())
+    if detail != "" {
+        restore_bkn_bin(oldb, had_old)
+        eprintln("machin-365: " + src + " cannot run on this host — not installed")
+        eprintln("  " + detail)
+        return 1
+    }
+    // Runnable is not the same as bkn: /bin/true probes clean yet never
+    // serves. The honest check is the one `service start` already does —
+    // spawn it and require /_health to identify THIS home's instance
+    // (bkn_owner). When this home's bkn is already running, restart onto
+    // the new bytes first so upgrades are verified the same way; a
+    // failure restores the previous binary and revives it.
+    was_running := bkn_owner() == "ours"
+    if was_running { cmd_service_stop() }
+    oldpid := trim(read_file(bkn_pidfile()))
+    if cmd_service_start() != 0 {
+        service_install_rollback(oldpid)
+        restore_bkn_bin(oldb, had_old)
+        foreign := bkn_owner() == "foreign"
+        tail := ""
+        if !foreign { tail = service_log_tail() }
+        // A foreign bkn holding the port is an environment problem, not a
+        // bad binary — its log tail would only mislead, and reviving the
+        // old binary would fail the same way. Otherwise surface the
+        // launcher's own words (a text file's "not found", a loader
+        // error) and put the previous service back.
+        if foreign {
+            // The port error above already says why — the binary itself
+            // was never the problem.
+            eprintln("machin-365: " + src + " not installed")
+        } else {
+            eprintln("machin-365: " + src + " is not a working bkn — install rejected")
+            if tail != "" { eprintln("  " + tail) }
+        }
+        if was_running && had_old && !foreign { cmd_service_start() }
+        return 1
+    }
     println("installed bkn → " + bkn_bin())
     return code
+}
+
+// Write bin/bkn atomically: a rename replaces the directory entry even
+// while the previous bkn is still executing it — a direct truncate-write
+// fails ETXTBSY on a running binary and, unchecked, silently keeps the
+// old bytes, so install would "verify" the wrong file.
+func write_bkn_bin(b) (code) {
+    code = 0
+    tmp := suite_home() + "/bin/.bkn.tmp"
+    if write_file_bytes(tmp, b) < 0 { remove(tmp)  return 1 }
+    system("chmod +x '" + tmp + "'")
+    if system("mv -f '" + tmp + "' '" + bkn_bin() + "'") != 0 {
+        remove(tmp)
+        return 1
+    }
+    return code
+}
+
+// Put back the previous bin/bkn after a failed install verify — a rejected
+// install leaves the suite exactly as it was, not half-written.
+func restore_bkn_bin(oldb, had_old) {
+    if had_old {
+        write_bkn_bin(oldb)
+    } else {
+        remove(bkn_bin())
+    }
+}
+
+// Undo the spawn cmd_service_start attempted during install verification.
+// Only a pid THIS attempt wrote to the pidfile may be killed — a
+// pre-existing pidfile can name a pid the OS has since recycled, and that
+// process is not ours to kill.
+func service_install_rollback(oldpid) {
+    pid := trim(read_file(bkn_pidfile()))
+    if pid == "" || pid == oldpid { return }
+    hp := bkn_health_pid()
+    if hp != "" && hp != pid { return }
+    system("kill " + pid + " 2>/dev/null")
+    remove(bkn_pidfile())
+}
+
+// The tail of bkn.log as a string — the launcher's own account of why the
+// binary never came up (a text file's "not found", a loader error). ""
+// when there is no log. Returned rather than printed so the caller picks
+// the ordering — a revive-start would truncate the log.
+func service_log_tail() (t) {
+    t = ""
+    sz := file_size(bkn_log())
+    if sz <= 0 { return }
+    off := sz - 400
+    if off < 0 { off = 0 }
+    t = trim(bytes_str(read_file_at(bkn_log(), off, sz - off)))
+    if t != "" { t = replace(t, "\n", "\n  ") }
+    return
 }
 
 // pid the bkn answering /_health reports; "" when nothing healthy listens.
