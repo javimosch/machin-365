@@ -1,0 +1,89 @@
+// scope_test.src — regression coverage for the sync scope-fork fix.
+//
+// Run:  machin test $(ls src/*.src | grep -v 'src/main.src') test/scope_test.src
+//
+// A remote bkn stamps its tenancy field (org_field = caller's org claim,
+// owner_field = caller's user id) into every doc it stores. Sync must
+// strip that stamp before writing the pulled doc to the LOCAL bkn — the
+// local store is single-user, and a kept stamp forks a second
+// scope-keyed row beside the app's scope-less original, which then wins
+// every GET/PATCH (bkn resolves ORDER BY scope LIMIT 1, '' first) and
+// LWW-pushes stale content over newer remote edits.
+//
+// These tests pin the pieces that decide WHAT gets stripped: the field
+// name comes from the local collection's declared policy (read straight
+// from the suite bkn's sqlite), never from guessing; and the
+// undiscoverable-policy fallback only removes a field whose value IS the
+// caller's claim, so genuine content is never eaten.
+
+// unsigned JWT-shaped token: header.payload.sig with
+// payload {"org":"demo","sub":"U1"} — jwt_claim reads the payload
+// without verifying, exactly like production tokens.
+var test_tok = "eyJhbGciOiJub25lIn0.eyJvcmciOiJkZW1vIiwic3ViIjoiVTEifQ.c2ln"
+
+func main() {
+    // --- jstrip: remove one top-level path, touch nothing else ----------
+    d := "{\"title\":\"t\",\"org\":\"demo\",\"_mtime\":5,\"nested\":{\"org\":\"keep\"}}"
+    got := jstrip(d, "$.org")
+    assert_eq_str(jstr(got, ".title"), "t", "jstrip keeps sibling fields")
+    assert_eq_str(jstr(got, ".org"), "", "jstrip removes the scope field")
+    assert_eq_str(jstr(got, ".nested.org"), "keep", "jstrip leaves nested fields alone")
+    mt, _ := json_get(got, "._mtime")
+    assert_eq_str(mt, "5", "jstrip keeps _mtime")
+    same := jstrip("{\"title\":\"t\"}", "$.org")
+    assert_eq_str(jstr(same, ".title"), "t", "jstrip on an absent field is a no-op")
+
+    // --- access_scope_field: policy -> scope field, mirroring bkn --------
+    orgpol := "{\"rules\":{\"read\":\"org\",\"create\":\"org\",\"update\":\"org\",\"delete\":\"org\"},\"org_field\":\"org\"}"
+    assert_eq_str(access_scope_field(orgpol), "org", "org policy scopes on org_field")
+    ownpol := "{\"rules\":{\"read\":\"owner\",\"create\":\"owner\"},\"owner_field\":\"user_id\"}"
+    assert_eq_str(access_scope_field(ownpol), "user_id", "owner policy scopes on owner_field")
+    both := "{\"rules\":{\"read\":\"org\",\"update\":\"owner\"},\"org_field\":\"org\",\"owner_field\":\"uid\"}"
+    assert_eq_str(access_scope_field(both), "org", "org wins over owner")
+    assert_eq_str(access_scope_field("{}"), "", "undeclared policy has no scope field")
+    pubpol := "{\"rules\":{\"read\":\"public\",\"create\":\"user\"},\"org_field\":\"org\"}"
+    assert_eq_str(access_scope_field(pubpol), "", "unscoped audiences ignore org_field")
+
+    // --- scope_field_in_db: the policy lives in collections.access ------
+    db := sqlite_open("/tmp/m365-scope-test.db")
+    sqlite_exec(db, "DROP TABLE IF EXISTS collections")
+    sqlite_exec(db, "CREATE TABLE collections (ns TEXT, name TEXT, access TEXT)")
+    sqlite_exec(db, "INSERT INTO collections VALUES (?,?,?)",
+        []string{"m365", "tasks", orgpol})
+    assert_eq_str(scope_field_in_db(db, "m365", "tasks"), "org",
+        "db org policy resolves to org")
+    assert_eq_str(scope_field_in_db(db, "m365", "missing"), "",
+        "undeclared collection resolves to no scope")
+    sqlite_close(db)
+    // a pre-policy schema has no access column at all -> undiscoverable
+    db2 := sqlite_open("/tmp/m365-scope-test2.db")
+    sqlite_exec(db2, "DROP TABLE IF EXISTS collections")
+    sqlite_exec(db2, "CREATE TABLE collections (ns TEXT, name TEXT)")
+    assert_eq_str(scope_field_in_db(db2, "m365", "tasks"), "?",
+        "missing access column is undiscoverable, not unscoped")
+    sqlite_close(db2)
+
+    // --- strip_scope_stamps: fallback removes only verified stamps ------
+    sync_remote_tok = test_tok
+    stamped := "{\"title\":\"t\",\"org\":\"demo\",\"owner\":\"U1\",\"_mtime\":5}"
+    got2 := strip_scope_stamps(stamped)
+    assert_eq_str(jstr(got2, ".org"), "", "org stamp stripped on claim match")
+    assert_eq_str(jstr(got2, ".owner"), "", "owner stamp stripped on sub match")
+    assert_eq_str(jstr(got2, ".title"), "t", "content preserved through fallback")
+    kept := "{\"title\":\"t\",\"org\":\"other\",\"owner\":\"someone-else\"}"
+    got3 := strip_scope_stamps(kept)
+    assert_eq_str(jstr(got3, ".org"), "other", "foreign org value is not our stamp")
+    assert_eq_str(jstr(got3, ".owner"), "someone-else", "foreign owner value is not our stamp")
+    sync_remote_tok = "not-a-jwt"
+    got4 := strip_scope_stamps("{\"org\":\"demo\"}")
+    assert_eq_str(jstr(got4, ".org"), "demo", "unverifiable token strips nothing")
+
+    // --- localize_doc: undiscoverable local policy -> verified fallback --
+    sync_local = "http://127.0.0.1:1" // never equals local_url() in tests
+    sync_remote_tok = test_tok
+    got5 := localize_doc("{\"title\":\"t\",\"org\":\"demo\"}", "m365/tasks")
+    assert_eq_str(jstr(got5, ".org"), "", "fallback path strips the org stamp")
+    assert_eq_str(jstr(got5, ".title"), "t", "fallback path keeps the doc")
+
+    test_summary()
+}

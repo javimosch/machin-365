@@ -1,6 +1,10 @@
 // sync.src — one-pass bidirectional replication between the suite-managed
 // local bkn and a remote bkn. Records are treated as opaque JSON: we only
 // read .id and ._mtime and re-POST the raw object (POST upserts by id).
+// The one exception is tenancy: a pulled doc is stripped of the local
+// collection's scope field before it is written locally (see scope.src) —
+// the local store is single-user and a kept stamp would fork a second
+// scope-keyed row beside the app's scope-less original.
 //
 // Conflict policy: last-writer-wins on the _mtime field — milliseconds
 // since epoch, the unit sync itself writes (now_ms()). Sync stamps
@@ -373,6 +377,7 @@ func sync_pass_once(refs) {
     sync_provision_tried = []string{}
     sync_absent_pass = []string{}
     sync_denied_refs = []string{}
+    sync_scope_cache = make(map[string]string)
     if !local_alive() {
         if !sync_local_dead {
             perr("machin-365: local bkn not running at " + sync_local +
