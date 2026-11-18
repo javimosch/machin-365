@@ -31,3 +31,65 @@ func save_config(c) {
     system("chmod 600 '" + tmp + "'")
     system("mv -f '" + tmp + "' '" + config_path() + "'")
 }
+
+// canonical "a/b,c/d" form of a ref list: deduped, order preserved
+func refs_to_csv(refs) {
+    uniq := []string{}
+    i := 0
+    while i < len(refs) {
+        if !has_ref(uniq, refs[i]) { uniq = append(uniq, refs[i]) }
+        i = i + 1
+    }
+    return join_strs(uniq, ",")
+}
+
+// --collections is sticky configuration: an explicit flag becomes the
+// persisted sync_collections set so bare `sync` and `sync --watch` keep
+// working (discover_refs reads config.sync_collections next). Runs once
+// per process, before the first pass — not per watch interval — and only
+// after remote/local endpoints are configured, so a flag on an
+// unauthenticated invocation is not memorised.
+func persist_coll_arg(refs) {
+    joined := refs_to_csv(refs)
+    c := load_config()
+    if c.sync_collections == joined { return }
+    c.sync_collections = joined
+    save_config(c)
+    eprintln("machin-365: sync_collections saved to config.json: " + joined)
+}
+
+// `config set sync_collections a/b,c/d` — the explicit setter for the
+// sticky sync set (`sync --collections` writes the same field). An empty
+// value clears the override and returns discovery to the
+// /v1/collections probe.
+func cmd_config_set(a) (code) {
+    code = 0
+    usage := "usage: machin-365 config set sync_collections a/b,c/d"
+    if len(a) < 5 {
+        eprintln(usage)
+        return 2
+    }
+    if len(a) > 5 {
+        eprintln("machin-365: unexpected argument '" + a[5] + "'")
+        eprintln(usage)
+        return 2
+    }
+    if a[3] != "sync_collections" {
+        eprintln("machin-365: config set supports: sync_collections")
+        return 2
+    }
+    refs := parse_coll_list(a[4])
+    if trim(a[4]) != "" && len(refs) == 0 {
+        eprintln("machin-365: no collections named in '" + a[4] + "'")
+        return 2
+    }
+    c := load_config()
+    c.sync_collections = refs_to_csv(refs)
+    save_config(c)
+    if c.sync_collections == "" {
+        println("sync_collections cleared — sync will probe /v1/collections")
+    } else {
+        println("sync_collections = " + c.sync_collections)
+    }
+    return code
+}

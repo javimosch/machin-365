@@ -1,16 +1,28 @@
 // main.src — entry point. argv[0] is the program name; the command is argv[1].
 
-func cmd_config() {
+func cmd_config(a) (code) {
+    code = 0
+    if len(a) > 2 {
+        if a[2] == "set" { return cmd_config_set(a) }
+        eprintln("usage: machin-365 config [set sync_collections a/b,c/d]")
+        return 2
+    }
     c := load_config()
     println("home:    " + suite_home())
     println("server:  " + c.server)
     println("email:   " + c.email)
     println("org:     " + c.org)
+    if c.sync_collections == "" {
+        println("collections: (auto — set via: config set sync_collections a/b,c/d)")
+    } else {
+        println("collections: " + c.sync_collections)
+    }
     if c.token != "" {
         println("token:   present")
     } else {
         println("token:   none")
     }
+    return code
 }
 
 func cmd_init() {
@@ -49,7 +61,7 @@ func dispatch(a) (code) {
         eprintln("usage: machin-365 auth <login|signup|status|logout>")
         return 2
     }
-    if cmd == "config" { cmd_config()  return code }
+    if cmd == "config" { return cmd_config(a) }
     if cmd == "service" {
         if len(a) > 2 && a[2] == "install" { return cmd_service_install(a) }
         if len(a) > 2 && a[2] == "start" { return cmd_service_start() }
