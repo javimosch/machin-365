@@ -1,0 +1,123 @@
+// watch.src — `sync --watch` output dedup. A dead remote used to reprint
+// the full per-pass failure block every interval (~40k identical lines a
+// day at the 15s default). Each watched pass now runs with its output
+// captured; when consecutive passes fail with an identical signature a
+// one-line heartbeat is printed instead, and the full block returns on
+// recovery or whenever the failure signature changes. One-shot `sync`
+// never captures — its output and exit codes are unchanged. The
+// once-per-process hints (sync_auth_warn) bypass capture on purpose so a
+// heartbeat can never swallow them.
+
+var sync_capture = false
+var sync_cap = []string{}
+var sync_last_sig = ""
+
+// pass output during --watch: buffered as "o"/"e"-prefixed lines so the
+// emit decision can replay stdout and stderr in order. Outside watch,
+// capture is off and these are plain println/eprintln.
+func pout(s) {
+    if sync_capture {
+        sync_cap = append(sync_cap, "o" + s)
+        return
+    }
+    println(s)
+    flush()
+}
+
+func perr(s) {
+    if sync_capture {
+        sync_cap = append(sync_cap, "e" + s)
+        return
+    }
+    eprintln(s)
+}
+
+// failure signature of the just-finished pass: local-dead flag, failed-call
+// count and the deduped error messages. Identical signature across
+// consecutive passes means the pass failed the same way.
+func sync_fail_sig() (s) {
+    s = ""
+    if sync_local_dead { s = "L|" }
+    s = s + str(sync_err_count) + "|" + join_strs(sync_err_msgs, ";")
+    return s
+}
+
+// short label for the heartbeat line, e.g. "remote connect".
+func sync_fail_kind() (k) {
+    if sync_local_dead { return "local bkn not running" }
+    k = "sync errors"
+    remote := false
+    i := 0
+    while i < len(sync_err_msgs) {
+        m := sync_err_msgs[i]
+        if has_prefix(m, "remote ") {
+            remote = true
+            if contains(m, "connect") { return "remote connect" }
+            if contains(m, "HTTP 401") || contains(m, "HTTP 403") {
+                return "remote auth"
+            }
+        } else if has_prefix(m, "local ") && contains(m, "connect") {
+            return "local connect"
+        }
+        i = i + 1
+    }
+    if remote { k = "remote errors" }
+    return k
+}
+
+func sync_cap_flush() {
+    i := 0
+    while i < len(sync_cap) {
+        tag := substr(sync_cap[i], 0, 1)
+        line := substr(sync_cap[i], 1, len(sync_cap[i]))
+        if tag == "e" {
+            eprintln(line)
+        } else {
+            println(line)
+            flush()
+        }
+        i = i + 1
+    }
+    sync_cap = []string{}
+}
+
+// print "=== sync pass N ===" plus the captured block — or, when this pass
+// failed exactly like the previous one, a single heartbeat line instead.
+func sync_watch_emit(pass) {
+    if !sync_local_dead && sync_err_count == 0 {
+        sync_last_sig = ""
+        println("=== sync pass " + str(pass) + " ===")
+        flush()
+        sync_cap_flush()
+        return
+    }
+    sig := sync_fail_sig()
+    if sig == sync_last_sig {
+        println("sync: still failing (" + sync_fail_kind() +
+            ") — pass " + str(pass))
+        flush()
+        sync_cap = []string{}
+        return
+    }
+    sync_last_sig = sig
+    println("=== sync pass " + str(pass) + " ===")
+    flush()
+    sync_cap_flush()
+}
+
+// the --watch loop: run a pass with output captured, then emit either the
+// full block or the dedup heartbeat.
+func sync_watch(refs, watch) {
+    println("watching every " + str(watch) + "s — ctrl-c to stop")
+    flush()
+    pass := 0
+    while true {
+        pass = pass + 1
+        sync_cap = []string{}
+        sync_capture = true
+        sync_pass(refs)
+        sync_capture = false
+        sync_watch_emit(pass)
+        sleep(watch * 1000)
+    }
+}

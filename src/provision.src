@@ -56,6 +56,6 @@ func remote_provision(ref) {
     st, _, err := api_put(sync_remote, sync_remote_tok, "/v1/store/" + ref,
         "{\"access\":{\"rules\":{\"read\":\"org\",\"create\":\"org\",\"update\":\"org\",\"delete\":\"org\"},\"org_field\":\"org\"}}")
     if err != "" || (st != 200 && st != 201) { return false }
-    eprintln("machin-365: declared remote collection " + ref)
+    perr("machin-365: declared remote collection " + ref)
     return true
 }
