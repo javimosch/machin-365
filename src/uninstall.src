@@ -45,7 +45,16 @@ func cmd_uninstall(a) (code) {
     id := ""
     i := 2
     while i < len(a) {
-        if id == "" && !has_prefix(a[i], "-") { id = a[i] }
+        arg := a[i]
+        if has_prefix(arg, "-") {
+            usage_fail("unknown flag '" + arg + "'", "usage: machin-365 uninstall <app-id>")
+            return 2
+        }
+        if id != "" {
+            usage_fail("unexpected argument '" + arg + "'", "usage: machin-365 uninstall <app-id>")
+            return 2
+        }
+        id = arg
         i = i + 1
     }
     if id == "" {

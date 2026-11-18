@@ -48,25 +48,50 @@ func cmd_init() {
 func dispatch(a) (code) {
     code = 0
     cmd := a[1]
-    if cmd == "init" { cmd_init()  return code }
+    if cmd == "init" {
+        if len(a) > 2 {
+            usage_fail("unexpected argument '" + a[2] + "'", "usage: machin-365 init")
+            return 2
+        }
+        cmd_init()
+        return code
+    }
     if cmd == "catalog" || cmd == "apps" { return cmd_catalog(a) }
     if cmd == "install" { return cmd_install(a) }
     if cmd == "uninstall" { return cmd_uninstall(a) }
     if cmd == "run" { return cmd_run(a) }
     if cmd == "auth" {
-        if len(a) > 2 && a[2] == "login" { return cmd_auth_login(a) }
-        if len(a) > 2 && a[2] == "signup" { return cmd_auth_signup(a) }
-        if len(a) > 2 && a[2] == "status" { cmd_auth_status()  return code }
-        if len(a) > 2 && a[2] == "logout" { cmd_auth_logout()  return code }
+        sub := ""
+        if len(a) > 2 { sub = a[2] }
+        if sub == "login" { return cmd_auth_login(a) }
+        if sub == "signup" { return cmd_auth_signup(a) }
+        if sub == "status" || sub == "logout" {
+            if len(a) > 3 {
+                usage_fail("unexpected argument '" + a[3] + "'",
+                    "usage: machin-365 auth " + sub)
+                return 2
+            }
+            if sub == "status" { cmd_auth_status() } else { cmd_auth_logout() }
+            return code
+        }
         eprintln("usage: machin-365 auth <login|signup|status|logout>")
         return 2
     }
     if cmd == "config" { return cmd_config(a) }
     if cmd == "service" {
-        if len(a) > 2 && a[2] == "install" { return cmd_service_install(a) }
-        if len(a) > 2 && a[2] == "start" { return cmd_service_start() }
-        if len(a) > 2 && a[2] == "stop" { cmd_service_stop()  return code }
-        if len(a) > 2 && a[2] == "status" { cmd_service_status()  return code }
+        sub := ""
+        if len(a) > 2 { sub = a[2] }
+        if sub == "install" { return cmd_service_install(a) }
+        if sub == "start" || sub == "stop" || sub == "status" {
+            if len(a) > 3 {
+                usage_fail("unexpected argument '" + a[3] + "'",
+                    "usage: machin-365 service " + sub)
+                return 2
+            }
+            if sub == "start" { return cmd_service_start() }
+            if sub == "stop" { cmd_service_stop() } else { cmd_service_status() }
+            return code
+        }
         eprintln("usage: machin-365 service <install|start|stop|status>")
         return 2
     }
