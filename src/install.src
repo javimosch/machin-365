@@ -335,9 +335,10 @@ func catalog_refresh() (code) {
     return code
 }
 
-func cmd_catalog(a) {
+func cmd_catalog(a) (code) {
+    code = 0
     if len(a) > 2 && a[2] == "--refresh" {
-        if catalog_refresh() != 0 { return }
+        if catalog_refresh() != 0 { return 1 }
     }
     cat := load_catalog()
     r := load_registry()
@@ -350,4 +351,5 @@ func cmd_catalog(a) {
         println(app.id + "\t" + app.name + "\t" + app.kind + "\t" + state + "\t" + app.desc)
         i = i + 1
     }
+    return code
 }
