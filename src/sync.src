@@ -442,8 +442,12 @@ func cmd_sync(a) (code) {
     }
 
     sync_setup()
-    if sync_remote == "" || sync_remote_tok == "" {
+    if sync_remote == "" {
         eprintln("machin-365: no remote configured — run: auth login --server URL")
+        return 1
+    }
+    if sync_remote_tok == "" {
+        eprintln("machin-365: not logged in — run: auth login")
         return 1
     }
     if sync_local == "" || sync_local_tok == "" {
