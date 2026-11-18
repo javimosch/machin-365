@@ -37,6 +37,8 @@ machin-365 run tasks                # launch (also in your OS app menu)
 machin-365 auth login --server URL --email E --password P [--org SLUG]
 machin-365 auth status | logout
 machin-365 config                   # paths + account state
+machin-365 config set sync_collections m365/tasks,sync/tombstones
+                                  # sticky sync collection list
 machin-365 service install --bin ./bkn   # install local bkn (probes it runs + serves)
 machin-365 service start|stop|status     # manage local bkn (127.0.0.1:17630)
 machin-365 sync                     # replicate local bkn <-> remote bkn
@@ -76,6 +78,12 @@ remote bkn configured via `auth login`.
 
 Replication is one pass per invocation (`--watch N` loops every N seconds),
 last-writer-wins on an app-level `_mtime` field (POST upserts by record id).
+
+Which collections sync is sticky configuration: `--collections a/b,c/d` is
+remembered in `config.json` (`sync_collections`) on first use, and
+`config set sync_collections a/b,c/d` sets it explicitly — either way bare
+`sync` / `sync --watch` keep working without retyping the list. With no
+configured set, sync probes `GET /v1/collections` on both sides.
 
 **Deletes propagate via tombstones**: before deleting a synced doc, the app
 POSTs `{"ref":"ns/coll","id":"ns/coll|<id>","_mtime":T}` to the

@@ -458,10 +458,12 @@ func cmd_sync(a) (code) {
     }
     if len(refs) == 0 {
         println("nothing to sync — no collections found")
-        println("hint: machin-365 sync --collections ns/coll,ns/coll2")
-        println("      or set sync_collections in config.json")
+        println("hint: machin-365 sync --collections ns/coll,ns/coll2  (remembered)")
+        println("      or: machin-365 config set sync_collections ns/coll,ns/coll2")
         return code
     }
+
+    if have_coll { persist_coll_arg(refs) }
 
     if watch > 0 {
         println("watching every " + str(watch) + "s — ctrl-c to stop")
