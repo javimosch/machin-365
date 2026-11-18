@@ -282,7 +282,6 @@ func cmd_run(a) (code) {
         eprintln("usage: machin-365 run <app-id> [args...]")
         return 2
     }
-    if ensure_service() != 0 { return 1 }
     r := load_registry()
     t, found := find_installed(r, id)
     if !found {
@@ -299,6 +298,9 @@ func cmd_run(a) (code) {
         eprintln("machin-365: reinstall for this platform: machin-365 install " + id)
         return 1
     }
+    // Only start bkn once there is an app binary to exec — a failed run
+    // must not leave a daemon behind.
+    if ensure_service() != 0 { return 1 }
     // system() inherits stdio, so the app's stdout/stderr reach the user
     // live — exec() would capture and silently drop them.
     cmd := shell_quote(t.bin)
