@@ -29,6 +29,11 @@ var sync_local_tok = ""
 var sync_err_count = 0
 var sync_err_msgs = []string{}
 
+// Set when a pass found the local endpoint unreachable. Lets a one-shot
+// sync exit non-zero after doing no work, and lets --watch print the
+// "service start" hint once per dead streak instead of every interval.
+var sync_local_dead = false
+
 // Credential-recovery state for the remote side: sync_remote_auth_err is
 // set by an auth-class remote failure, triggering one refresh + retry;
 // sync_refresh_dead stops further attempts (refresh rejected, or a fresh
@@ -90,6 +95,16 @@ func api_delete(base, tok, path, side) {
     ok := (st == 200 || st == 204) && err == ""
     if !ok { sync_note_err(side, "DELETE " + path, st, err, resp) }
     return ok
+}
+
+// One transport-level probe of the local endpoint per pass. A connect
+// failure means nothing is listening — say so once instead of reporting a
+// wall of per-call "connect" errors. Any HTTP status counts as alive:
+// auth and store errors are still reported per call, where they belong.
+func local_alive() {
+    _, _, err := api_get(sync_local, sync_local_tok,
+        "/v1/store/" + sync_tomb_coll + "?limit=1")
+    return err == ""
 }
 
 // fetch every record of a collection as raw JSON objects, paginated.
@@ -359,6 +374,15 @@ func sync_pass_once(refs) {
     sync_err_msgs = []string{}
     sync_remote_auth_err = false
     sync_provision_tried = []string{}
+    if !local_alive() {
+        if !sync_local_dead {
+            eprintln("machin-365: local bkn not running at " + sync_local +
+                " — run: service start")
+            sync_local_dead = true
+        }
+        return
+    }
+    sync_local_dead = false
     canon_tombs(sync_local, sync_local_tok, "local")
     canon_tombs(sync_remote, sync_remote_tok, "remote")
     empty := make(map[string]int)
@@ -454,7 +478,7 @@ func cmd_sync(a) (code) {
         return code
     }
     sync_pass(refs)
-    if sync_err_count > 0 { return 1 }
+    if sync_local_dead || sync_err_count > 0 { return 1 }
     return code
 }
 
