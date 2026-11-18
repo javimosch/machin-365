@@ -195,9 +195,22 @@ func bkn_owner() {
     return "foreign"
 }
 
+// A failed start must not leave port/token in config.json claiming a
+// local bkn is configured — sync would then probe a dead endpoint on
+// every pass instead of reporting "no local bkn". Restores whatever the
+// config held before this attempt (usually empty on a fresh home).
+func service_start_unpersist(old_port, old_tok) {
+    c := load_config()
+    c.local_port = old_port
+    c.local_token = old_tok
+    save_config(c)
+}
+
 func cmd_service_start() (code) {
     code = 0
     c := load_config()
+    old_port := c.local_port
+    old_tok := c.local_token
     if c.local_token == "" {
         // 32 hex chars of randomness is enough for a loopback admin token.
         c.local_token = to_hex(rand_bytes(16))
@@ -211,6 +224,7 @@ func cmd_service_start() (code) {
         return code
     }
     if own == "foreign" {
+        service_start_unpersist(old_port, old_tok)
         eprintln("machin-365: port " + str(bkn_port()) + " already serves a different bkn " +
             "(pid " + bkn_health_pid() + ") — another MACHIN_365_HOME?")
         eprintln("machin-365: set MACHIN_365_BKN_PORT or stop the other instance")
@@ -222,6 +236,7 @@ func cmd_service_start() (code) {
         " >'" + bkn_log() + "' 2>&1 & echo $!"
     _, out, err := exec(cmd)
     if err != "" {
+        service_start_unpersist(old_port, old_tok)
         eprintln("machin-365: service start failed: " + err)
         return 1
     }
@@ -249,6 +264,7 @@ func cmd_service_start() (code) {
     } else {
         eprintln("machin-365: bkn did not come up — see " + bkn_log())
     }
+    service_start_unpersist(old_port, old_tok)
     return 1
 }
 
