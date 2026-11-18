@@ -105,6 +105,12 @@ func cmd_config_set(a) (code) {
         eprintln("machin-365: no collections named in '" + a[4] + "'")
         return 2
     }
+    bad := first_bad_ref(refs)
+    if bad != "" {
+        eprintln("machin-365: invalid collection ref '" + bad + "' — expected ns/coll")
+        eprintln(usage)
+        return 2
+    }
     c := load_config()
     c.sync_collections = refs_to_csv(refs)
     if save_config(c) != 0 {
