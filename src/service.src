@@ -35,10 +35,34 @@ func find_bkn() {
 func cmd_service_install(a) (code) {
     code = 0
     src := ""
-    i := 2
+    i := 3
     while i < len(a) {
-        if a[i] == "--bin" && i+1 < len(a) { src = a[i+1]  i = i + 2  continue }
-        i = i + 1
+        arg := a[i]
+        if has_prefix(arg, "--") {
+            fname, val, has_eq := flag_eq(arg)
+            if fname != "--bin" {
+                usage_fail("unknown flag '" + arg + "'",
+                    "usage: machin-365 service install [--bin /path/to/bkn]")
+                return 2
+            }
+            v, last, ok := flag_value(a, i, val, has_eq)
+            if !ok {
+                usage_fail("--bin requires a value (e.g. --bin ./bkn)",
+                    "usage: machin-365 service install [--bin /path/to/bkn]")
+                return 2
+            }
+            src = v
+            i = last + 1
+            continue
+        }
+        if has_prefix(arg, "-") {
+            usage_fail("unknown flag '" + arg + "'",
+                "usage: machin-365 service install [--bin /path/to/bkn]")
+            return 2
+        }
+        usage_fail("unexpected argument '" + arg + "'",
+            "usage: machin-365 service install [--bin /path/to/bkn]")
+        return 2
     }
     if src == "" { src = find_bkn() }
     if src == "" {

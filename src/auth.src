@@ -155,19 +155,55 @@ func join_strs(list, sep) {
     return out
 }
 
+// cmd_auth_login/signup argv: --server/--email/--password plus --org on
+// both and --name on signup only (with_name). Every flag takes a value in
+// either "--flag value" or "--flag=value" form. Unknown flags, bare
+// positionals and dangling values are usage errors — a mistyped flag must
+// never silently authenticate with a different (or missing) credential.
+func auth_parse_args(a, with_name) (server, email, password, org, name, err_msg) {
+    server = ""
+    email = ""
+    password = ""
+    org = ""
+    name = ""
+    err_msg = ""
+    i := 3
+    while i < len(a) {
+        arg := a[i]
+        if !has_prefix(arg, "--") {
+            err_msg = "unexpected argument '" + arg + "'"
+            return
+        }
+        fname, val, has_eq := flag_eq(arg)
+        known := fname == "--server" || fname == "--email" ||
+            fname == "--password" || fname == "--org" ||
+            (with_name && fname == "--name")
+        if !known {
+            err_msg = "unknown flag '" + arg + "'"
+            return
+        }
+        v, last, ok := flag_value(a, i, val, has_eq)
+        if !ok {
+            err_msg = fname + " requires a value"
+            return
+        }
+        if fname == "--server" { server = v }
+        else if fname == "--email" { email = v }
+        else if fname == "--password" { password = v }
+        else if fname == "--org" { org = v }
+        else { name = v }
+        i = last + 1
+    }
+    return
+}
+
 func cmd_auth_login(a) (code) {
     code = 0
-    server := ""
-    email := ""
-    password := ""
-    org := ""
-    i := 2
-    while i < len(a) {
-        if a[i] == "--server" && i+1 < len(a) { server = a[i+1]  i = i + 2  continue }
-        if a[i] == "--email" && i+1 < len(a) { email = a[i+1]  i = i + 2  continue }
-        if a[i] == "--password" && i+1 < len(a) { password = a[i+1]  i = i + 2  continue }
-        if a[i] == "--org" && i+1 < len(a) { org = a[i+1]  i = i + 2  continue }
-        i = i + 1
+    server, email, password, org, name, err_msg := auth_parse_args(a, false)
+    if err_msg != "" {
+        usage_fail(err_msg,
+            "usage: machin-365 auth login --server URL --email E --password P [--org SLUG]")
+        return 2
     }
     if server == "" {
         server = load_config().server
@@ -266,19 +302,11 @@ func default_org_slug(email) {
 // tokens and sync needs the org claim for row-level tenancy.
 func cmd_auth_signup(a) (code) {
     code = 0
-    server := ""
-    email := ""
-    password := ""
-    name := ""
-    org := ""
-    i := 2
-    while i < len(a) {
-        if a[i] == "--server" && i+1 < len(a) { server = a[i+1]  i = i + 2  continue }
-        if a[i] == "--email" && i+1 < len(a) { email = a[i+1]  i = i + 2  continue }
-        if a[i] == "--password" && i+1 < len(a) { password = a[i+1]  i = i + 2  continue }
-        if a[i] == "--name" && i+1 < len(a) { name = a[i+1]  i = i + 2  continue }
-        if a[i] == "--org" && i+1 < len(a) { org = a[i+1]  i = i + 2  continue }
-        i = i + 1
+    server, email, password, org, name, err_msg := auth_parse_args(a, true)
+    if err_msg != "" {
+        usage_fail(err_msg,
+            "usage: machin-365 auth signup --server URL --email E --password P [--name N] [--org SLUG]")
+        return 2
     }
     if server == "" { server = load_config().server }
     if server == "" {

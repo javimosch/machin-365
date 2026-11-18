@@ -209,19 +209,52 @@ func install_asset(id, app, asset) (code) {
     return code
 }
 
-func cmd_install(a) (code) {
-    code = 0
-    id := ""
-    binpath := ""
+// cmd_install argv: exactly one positional <id> plus an optional
+// --bin <path> / --bin=<path>. Any other "--*" or "-*" token and any
+// second positional are usage errors — a mistyped flag must never
+// degrade into a release-asset install the user did not ask for.
+func install_parse_args(a) (id, binpath, err_msg) {
+    id = ""
+    binpath = ""
+    err_msg = ""
     i := 2
     while i < len(a) {
-        if a[i] == "--bin" && i+1 < len(a) {
-            binpath = a[i+1]
-            i = i + 2
+        arg := a[i]
+        if has_prefix(arg, "--") {
+            name, val, has_eq := flag_eq(arg)
+            if name != "--bin" {
+                err_msg = "unknown flag '" + arg + "'"
+                return
+            }
+            v, last, ok := flag_value(a, i, val, has_eq)
+            if !ok {
+                err_msg = "--bin requires a value (e.g. --bin ./path/to/binary)"
+                return
+            }
+            binpath = v
+            i = last + 1
             continue
         }
-        if id == "" { id = a[i] }
+        if has_prefix(arg, "-") {
+            err_msg = "unknown flag '" + arg + "'"
+            return
+        }
+        if id != "" {
+            err_msg = "unexpected argument '" + arg + "'"
+            return
+        }
+        id = arg
         i = i + 1
+    }
+    return
+}
+
+func cmd_install(a) (code) {
+    code = 0
+    id, binpath, err_msg := install_parse_args(a)
+    if err_msg != "" {
+        usage_fail(err_msg, "usage: machin-365 install <app-id> [--bin /path/to/binary]")
+        return 2
     }
     if id == "" {
         eprintln("usage: machin-365 install <app-id> [--bin /path/to/binary]")
@@ -339,7 +372,22 @@ func catalog_refresh() (code) {
 
 func cmd_catalog(a) (code) {
     code = 0
-    if len(a) > 2 && a[2] == "--refresh" {
+    refresh := false
+    ai := 2
+    while ai < len(a) {
+        arg := a[ai]
+        if arg == "--refresh" {
+            refresh = true
+        } else if has_prefix(arg, "--") {
+            usage_fail("unknown flag '" + arg + "'", "usage: machin-365 catalog [--refresh]")
+            return 2
+        } else {
+            usage_fail("unexpected argument '" + arg + "'", "usage: machin-365 catalog [--refresh]")
+            return 2
+        }
+        ai = ai + 1
+    }
+    if refresh {
         if catalog_refresh() != 0 { return 1 }
     }
     cat := load_catalog()

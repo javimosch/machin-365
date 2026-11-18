@@ -1,8 +1,9 @@
-// syncargs.src — `sync` flag parsing. Flags are validated BEFORE config or
-// the network are touched: a mistyped flag must fail loudly (exit 2), never
-// degrade into a silent no-op sync that reports success while replicating
-// nothing. Both "--flag value" and "--flag=value" forms are accepted; any
-// other "--*" token or bare positional argument is a usage error.
+// args.src — shared CLI argument validation. Every command rejects unknown
+// "--*" flags, dangling flag values and stray positionals with exit 2 +
+// usage: a mistyped flag must fail loudly, never degrade into an action
+// the user did not request (the convention `sync` established in #25,
+// applied suite-wide). Both "--flag value" and "--flag=value" forms are
+// accepted where a flag takes a value.
 
 // split an arg of the form "--name=value" into name and inline value.
 // has_eq is false for a bare "--name" (no '=' present).
@@ -17,6 +18,35 @@ func flag_eq(arg) (name, val, has_eq) {
         has_eq = true
     }
     return
+}
+
+// flag_value resolves the value for the flag at argv index i. The inline
+// "--name=value" form wins; otherwise the next argv token is the value —
+// which must exist and not itself look like a "--*" flag. Returns the
+// value, the index of the last argv token consumed, and ok=false when the
+// flag is dangling: a usage error, never a silent default.
+func flag_value(a, i, val, has_eq) (v, last, ok) {
+    v = ""
+    last = i
+    ok = false
+    if has_eq {
+        if val == "" { return }
+        v = val
+        ok = true
+        return
+    }
+    if i + 1 >= len(a) || has_prefix(a[i+1], "--") { return }
+    v = a[i+1]
+    last = i + 1
+    ok = true
+    return
+}
+
+// usage_fail prints the standard "machin-365: <msg>" diagnostic followed by
+// the command's usage line; the caller then returns 2.
+func usage_fail(msg, usage) {
+    eprintln("machin-365: " + msg)
+    eprintln(usage)
 }
 
 // Parse and validate `sync` flags. Returns the --watch interval in seconds
