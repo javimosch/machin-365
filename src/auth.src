@@ -21,15 +21,28 @@ func strip_slash(s) {
     return s
 }
 
+// "HTTP <status> <server message>" for a failed auth call: the error
+// envelope's .error.message when the body carries one (same extraction as
+// sync's http_errnote), else the raw body — non-envelope replies still
+// show what the server actually said.
+func auth_errnote(st, resp) {
+    m, e := json_get(resp, ".error.message")
+    if e == "" {
+        mm := parse(m, "")
+        if mm != "" { return "HTTP " + str(st) + " " + mm }
+    }
+    return "HTTP " + str(st) + " " + resp
+}
+
 // POST /v1/auth/login {email,password,org} → tokens. msg "" on success,
-// otherwise the transport error or "HTTP <status> <body>" to report.
+// otherwise the transport error or auth_errnote() detail to report.
 func auth_login_call(server, email, password, org) (lr, msg) {
     lr = LoginResp{}
     msg = ""
     body := "{\"email\":" + json(email) + ",\"password\":" + json(password) + ",\"org\":" + json(org) + "}"
     st, resp, err := http_request("POST", server + "/v1/auth/login", []string{"Content-Type: application/json"}, body)
     if err != "" { msg = err  return }
-    if st != 200 { msg = "HTTP " + str(st) + " " + resp  return }
+    if st != 200 { msg = auth_errnote(st, resp)  return }
     lr = parse(resp, LoginResp{})
     if lr.tokens.access_token == "" { msg = "login response missing access_token" }
     return
@@ -58,7 +71,7 @@ func auth_my_orgs(server, tok) (orgs, ok) {
 // POST /v1/auth/refresh {refresh_token} → rotated tokens. Same envelope as
 // login; rotation is unconditional server-side, so the returned
 // refresh_token MUST replace the stored one — the old one is dead.
-// msg "" on success, otherwise transport error or "HTTP <status> <body>".
+// msg "" on success, otherwise transport error or auth_errnote() detail.
 func auth_refresh_call(server, refresh) (lr, msg) {
     lr = LoginResp{}
     msg = ""
@@ -66,7 +79,7 @@ func auth_refresh_call(server, refresh) (lr, msg) {
     st, resp, err := http_request("POST", server + "/v1/auth/refresh",
         []string{"Content-Type: application/json"}, body)
     if err != "" { msg = err  return }
-    if st != 200 { msg = "HTTP " + str(st) + " " + resp  return }
+    if st != 200 { msg = auth_errnote(st, resp)  return }
     lr = parse(resp, LoginResp{})
     if lr.tokens.access_token == "" { msg = "refresh response missing access_token" }
     return
@@ -288,7 +301,7 @@ func cmd_auth_signup(a) (code) {
         return 1
     }
     if st != 200 {
-        eprintln("machin-365: signup failed: HTTP " + str(st) + " " + resp)
+        eprintln("machin-365: signup failed: " + auth_errnote(st, resp))
         return 1
     }
     rr := parse(resp, LoginResp{})
@@ -308,7 +321,7 @@ func cmd_auth_signup(a) (code) {
         return 1
     }
     if st != 200 && st != 201 {
-        eprintln("machin-365: org create failed: HTTP " + str(st) + " " + resp)
+        eprintln("machin-365: org create failed: " + auth_errnote(st, resp))
         return 1
     }
 
