@@ -314,12 +314,11 @@ func sync_one_ref(ref, tm) {
         }
         j = j + 1
     }
-    println(ref + ": pushed=" + str(pushed) + " pulled=" + str(pulled) +
+    pout(ref + ": pushed=" + str(pushed) + " pulled=" + str(pulled) +
         " deleted=" + str(deleted) + " same=" + str(same) +
         " local=" + str(len(lr)) + " remote=" + str(len(rr)))
-    flush()
     if sync_err_count > e0 {
-        eprintln(ref + ": " + str(sync_err_count - e0) + " call(s) failed")
+        perr(ref + ": " + str(sync_err_count - e0) + " call(s) failed")
     }
 }
 
@@ -360,7 +359,7 @@ func sync_maybe_refresh() {
     ntok, ok, fatal := sync_try_refresh()
     if ok {
         sync_remote_tok = ntok
-        eprintln("machin-365: access token refreshed before expiry")
+        perr("machin-365: access token refreshed before expiry")
     } else {
         if fatal { sync_refresh_dead = true }
         sync_auth_warn("access token expired and refresh failed — run: machin-365 auth login")
@@ -376,7 +375,7 @@ func sync_pass_once(refs) {
     sync_provision_tried = []string{}
     if !local_alive() {
         if !sync_local_dead {
-            eprintln("machin-365: local bkn not running at " + sync_local +
+            perr("machin-365: local bkn not running at " + sync_local +
                 " — run: service start")
             sync_local_dead = true
         }
@@ -394,10 +393,10 @@ func sync_pass_once(refs) {
         i = i + 1
     }
     if sync_err_count > 0 {
-        eprintln("sync incomplete: " + str(sync_err_count) + " call(s) failed this pass:")
+        perr("sync incomplete: " + str(sync_err_count) + " call(s) failed this pass:")
         j := 0
         while j < len(sync_err_msgs) {
-            eprintln("  " + sync_err_msgs[j])
+            perr("  " + sync_err_msgs[j])
             j = j + 1
         }
     }
@@ -422,7 +421,7 @@ func sync_pass(refs) {
         return
     }
     sync_remote_tok = ntok
-    eprintln("machin-365: access token refreshed — retrying pass")
+    perr("machin-365: access token refreshed — retrying pass")
     sync_pass_once(refs)
     if sync_remote_auth_err {
         sync_refresh_dead = true
@@ -470,17 +469,7 @@ func cmd_sync(a) (code) {
     if have_coll { persist_coll_arg(refs) }
 
     if watch > 0 {
-        println("watching every " + str(watch) + "s — ctrl-c to stop")
-        flush()
-        pass := 0
-        while true {
-            pass = pass + 1
-            println("=== sync pass " + str(pass) + " ===")
-            flush()
-            sync_pass(refs)
-            flush()
-            sleep(watch * 1000)
-        }
+        sync_watch(refs, watch)
         return code
     }
     sync_pass(refs)
