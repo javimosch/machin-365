@@ -36,6 +36,11 @@ machin-365 uninstall tasks          # remove app; data/tasks/ is kept
 machin-365 prune                     # drop .desktop entries whose home/binary is gone
 machin-365 run tasks                # launch (also in your OS app menu)
 machin-365 auth login --server URL --email E --password P [--org SLUG]
+machin-365 auth signup --server URL --email E --password P [--name N] [--org SLUG]
+machin-365 auth memberships | orgs       # orgs the account belongs to
+machin-365 auth member add <org> <user> [--role owner|admin|member]
+machin-365 auth member list <org> | member remove <org> <user>
+machin-365 auth switch-org <slug>       # re-scope the session, no password
 machin-365 auth status | logout
 machin-365 config                   # paths + account state
 machin-365 config set sync_collections m365/tasks,sync/tombstones
@@ -69,6 +74,13 @@ the bkn `org` access policy stamps and filters rows by the caller's org, so
 sync needs no per-user configuration — each account only ever sees its own
 collections' rows. A shared throwaway demo login also exists
 (`demo@machin-365.dev` / org `demo`) for quick poking.
+
+Sync is org-scoped, so sharing a workspace means sharing an org. An org
+owner/admin adds a teammate with `auth member add <org> <email>`; the
+teammate then signs in with `auth login --org <slug>` (or
+`auth switch-org <slug>` when already logged in) and sync converges on the
+same rows. `auth memberships`/`auth orgs` show which orgs an account can
+enter, `auth member list` shows an org's roster.
 
 ## Local-first data layer
 

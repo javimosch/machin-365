@@ -1,0 +1,366 @@
+// orgs.src — org membership commands. Sync is org-scoped: rows replicate
+// only inside the caller's org, so a shared workspace IS a shared org.
+// These wrap the bkn membership surface the suite never exposed:
+//
+//   auth member add <org> <user> [--role owner|admin|member]
+//   auth member list <org>
+//   auth member remove <org> <user>
+//   auth memberships            — the signed-in account's org memberships
+//   auth orgs                   — org slugs the account belongs to
+//   auth switch-org <slug>      — re-scope the stored session, no password
+//
+// member/memberships/orgs run on the config'd server with the stored
+// access token; a 401 rotates the session once and retries (auth_api) —
+// the same recovery sync performs. switch-org trades the stored
+// refresh_token for an org-scoped pair via POST /v1/auth/switch-org;
+// rotation is unconditional server-side, so BOTH tokens must persist.
+//
+// GET /v1/auth/orgs (every org on the server) is admin-token-only on bkn
+// and the suite stores no admin token, so `auth orgs` reports the caller's
+// own memberships via /v1/auth/me instead.
+
+type OrgMembership struct {
+    org_slug string
+    role string
+    user_email string
+}
+
+// auth_api performs an authenticated call against the configured server.
+// On a 401 it refreshes the stored session once and retries the call.
+func auth_api(method, path, reqbody) (st, resp, err) {
+    st = 0
+    resp = ""
+    err = ""
+    c := load_config()
+    server := strip_slash(c.server)
+    hdrs := []string{"Authorization: Bearer " + c.token}
+    if reqbody != "" { hdrs = append(hdrs, "Content-Type: application/json") }
+    st, resp, err = http_request(method, server + path, hdrs, reqbody)
+    if st == 401 && c.refresh_token != "" {
+        ntok, ok, _ := auth_refresh_stored(server)
+        if ok {
+            hdrs = []string{"Authorization: Bearer " + ntok}
+            if reqbody != "" { hdrs = append(hdrs, "Content-Type: application/json") }
+            st, resp, err = http_request(method, server + path, hdrs, reqbody)
+        }
+    }
+    return
+}
+
+// auth_need_login gates the org commands: the config must name a server
+// and hold a token, or there is nothing to authenticate with.
+func auth_need_login() (msg) {
+    msg = ""
+    c := load_config()
+    if c.server == "" {
+        msg = "not configured — run: auth login --server URL --email E --password P"
+        return
+    }
+    if c.token == "" {
+        msg = "not logged in — run: auth login"
+        return
+    }
+    return
+}
+
+// membership rows off /v1/auth/me (.memberships[]) and off an org's
+// members response (.members[]) share the same fields.
+func parse_member_rows(body, key) (ms) {
+    ms = []OrgMembership{}
+    j := 0
+    while true {
+        base := "." + key + "[" + str(j) + "]"
+        slug_r, e := json_get(body, base + ".org_slug")
+        if e != "" { break }
+        role_r, _ := json_get(body, base + ".role")
+        em_r, _ := json_get(body, base + ".user_email")
+        ms = append(ms, OrgMembership{org_slug: parse(slug_r, ""), role: parse(role_r, ""), user_email: parse(em_r, "")})
+        j = j + 1
+    }
+    return
+}
+
+// GET /v1/auth/me → the signed-in account's memberships. msg "" on
+// success; the caller prints msg and returns 1 otherwise.
+func auth_my_memberships() (ms, msg) {
+    ms = []OrgMembership{}
+    msg = ""
+    st, body, err := auth_api("GET", "/v1/auth/me", "")
+    if err != "" { msg = "memberships failed: " + err  return }
+    if st != 200 { msg = "memberships failed: " + auth_errnote(st, body)  return }
+    ms = parse_member_rows(body, "memberships")
+    return
+}
+
+func cmd_auth_memberships(a) (code) {
+    code = 0
+    if len(a) > 3 {
+        usage_fail("unexpected argument '" + a[3] + "'", "usage: machin-365 auth memberships")
+        return 2
+    }
+    msg := auth_need_login()
+    if msg != "" {
+        eprintln("machin-365: " + msg)
+        return 1
+    }
+    ms, emsg := auth_my_memberships()
+    if emsg != "" {
+        eprintln("machin-365: " + emsg)
+        return 1
+    }
+    if len(ms) == 0 {
+        println("no org memberships — org-scoped collections will refuse this token")
+        return code
+    }
+    i := 0
+    while i < len(ms) {
+        println(ms[i].org_slug + "  " + ms[i].role)
+        i = i + 1
+    }
+    return code
+}
+
+func cmd_auth_orgs(a) (code) {
+    code = 0
+    if len(a) > 3 {
+        usage_fail("unexpected argument '" + a[3] + "'", "usage: machin-365 auth orgs")
+        return 2
+    }
+    msg := auth_need_login()
+    if msg != "" {
+        eprintln("machin-365: " + msg)
+        return 1
+    }
+    ms, emsg := auth_my_memberships()
+    if emsg != "" {
+        eprintln("machin-365: " + emsg)
+        return 1
+    }
+    if len(ms) == 0 {
+        println("no org memberships")
+        return code
+    }
+    i := 0
+    while i < len(ms) {
+        println(ms[i].org_slug)
+        i = i + 1
+    }
+    return code
+}
+
+func cmd_auth_member(a) (code) {
+    code = 0
+    if len(a) < 4 {
+        eprintln("usage: machin-365 auth member <add|list|remove> ...")
+        return 2
+    }
+    act := a[3]
+    if act == "add" { return cmd_member_add(a) }
+    if act == "list" { return cmd_member_list(a) }
+    if act == "remove" { return cmd_member_remove(a) }
+    usage_fail("unknown member action '" + act + "'",
+        "usage: machin-365 auth member <add|list|remove> ...")
+    return 2
+}
+
+// `member add <org> <user> [--role R]` — the caller must be owner/admin of
+// <org> (the server checks the DB membership, not the token's org claim,
+// so the stored token may be scoped to a different org).
+func cmd_member_add(a) (code) {
+    code = 0
+    usage := "usage: machin-365 auth member add <org> <user> [--role owner|admin|member]"
+    if len(a) < 6 {
+        eprintln(usage)
+        return 2
+    }
+    org := a[4]
+    user := a[5]
+    role := "member"
+    i := 6
+    while i < len(a) {
+        arg := a[i]
+        if !has_prefix(arg, "--") {
+            usage_fail("unexpected argument '" + arg + "'", usage)
+            return 2
+        }
+        fname, val, has_eq := flag_eq(arg)
+        if fname != "--role" {
+            usage_fail("unknown flag '" + arg + "'", usage)
+            return 2
+        }
+        v, last, ok := flag_value(a, i, val, has_eq)
+        if !ok {
+            usage_fail(fname + " requires a value", usage)
+            return 2
+        }
+        role = v
+        i = last + 1
+    }
+    if role != "owner" && role != "admin" && role != "member" {
+        usage_fail("role must be one of: owner, admin, member", usage)
+        return 2
+    }
+    msg := auth_need_login()
+    if msg != "" {
+        eprintln("machin-365: " + msg)
+        return 1
+    }
+    body := "{\"user\":" + json(user) + ",\"role\":" + json(role) + "}"
+    st, resp, err := auth_api("POST", "/v1/auth/orgs/" + org + "/members", body)
+    if err != "" {
+        eprintln("machin-365: member add failed: " + err)
+        return 1
+    }
+    if st != 200 && st != 201 {
+        eprintln("machin-365: member add failed: " + auth_errnote(st, resp))
+        return 1
+    }
+    em_r, _ := json_get(resp, ".membership.user_email")
+    rl_r, _ := json_get(resp, ".membership.role")
+    em := parse(em_r, "")
+    if em == "" { em = user }
+    rl := parse(rl_r, "")
+    if rl == "" { rl = role }
+    println("added " + em + " to " + org + " as " + rl)
+    return code
+}
+
+func cmd_member_list(a) (code) {
+    code = 0
+    usage := "usage: machin-365 auth member list <org>"
+    if len(a) < 5 {
+        eprintln(usage)
+        return 2
+    }
+    if len(a) > 5 {
+        usage_fail("unexpected argument '" + a[5] + "'", usage)
+        return 2
+    }
+    org := a[4]
+    msg := auth_need_login()
+    if msg != "" {
+        eprintln("machin-365: " + msg)
+        return 1
+    }
+    st, resp, err := auth_api("GET", "/v1/auth/orgs/" + org + "/members", "")
+    if err != "" {
+        eprintln("machin-365: member list failed: " + err)
+        return 1
+    }
+    if st != 200 {
+        eprintln("machin-365: member list failed: " + auth_errnote(st, resp))
+        return 1
+    }
+    ms := parse_member_rows(resp, "members")
+    if len(ms) == 0 {
+        println("no members")
+        return code
+    }
+    i := 0
+    while i < len(ms) {
+        println(ms[i].user_email + "  " + ms[i].role)
+        i = i + 1
+    }
+    return code
+}
+
+// `member remove <org> <user>` — <user> is an email or user id and goes
+// into the path RAW: bkn does not percent-decode path segments, so an
+// encoded "@" would arrive literally and match no user.
+func cmd_member_remove(a) (code) {
+    code = 0
+    usage := "usage: machin-365 auth member remove <org> <user>"
+    if len(a) < 6 {
+        eprintln(usage)
+        return 2
+    }
+    if len(a) > 6 {
+        usage_fail("unexpected argument '" + a[6] + "'", usage)
+        return 2
+    }
+    org := a[4]
+    user := a[5]
+    msg := auth_need_login()
+    if msg != "" {
+        eprintln("machin-365: " + msg)
+        return 1
+    }
+    st, resp, err := auth_api("DELETE", "/v1/auth/orgs/" + org + "/members/" + user, "")
+    if err != "" {
+        eprintln("machin-365: member remove failed: " + err)
+        return 1
+    }
+    if st != 200 && st != 204 {
+        eprintln("machin-365: member remove failed: " + auth_errnote(st, resp))
+        return 1
+    }
+    println("removed " + user + " from " + org)
+    return code
+}
+
+// `switch-org <slug>` — POST /v1/auth/switch-org {refresh_token, org}
+// re-scopes the session without the password. Needs the stored
+// refresh_token; the rotated pair replaces BOTH stored tokens.
+func cmd_auth_switch_org(a) (code) {
+    code = 0
+    usage := "usage: machin-365 auth switch-org <slug>"
+    if len(a) < 4 {
+        eprintln(usage)
+        return 2
+    }
+    if len(a) > 4 {
+        usage_fail("unexpected argument '" + a[4] + "'", usage)
+        return 2
+    }
+    slug := a[3]
+    if has_prefix(slug, "--") {
+        usage_fail("unexpected argument '" + slug + "'", usage)
+        return 2
+    }
+    c := load_config()
+    if c.server == "" {
+        eprintln("machin-365: not configured — run: auth login --server URL --email E --password P")
+        return 1
+    }
+    if c.refresh_token == "" {
+        eprintln("machin-365: no stored session — run: auth login")
+        return 1
+    }
+    server := strip_slash(c.server)
+    jhdr := []string{"Content-Type: application/json"}
+    body := "{\"refresh_token\":" + json(c.refresh_token) + ",\"org\":" + json(slug) + "}"
+    st, resp, err := http_request("POST", server + "/v1/auth/switch-org", jhdr, body)
+    if err != "" {
+        eprintln("machin-365: switch-org failed: " + err)
+        return 1
+    }
+    if st != 200 {
+        note := auth_errnote(st, resp)
+        eprintln("machin-365: switch-org failed: " + note)
+        if st == 404 {
+            // Two different 404s share this route: "no such route" means
+            // the server predates switch-org; anything else (e.g.
+            // "organization not found") is about the slug itself.
+            if contains(resp, "no such route") {
+                eprintln("machin-365: server has no switch-org route — run: auth login --org " + slug)
+            } else {
+                eprintln("machin-365: check the slug — 'auth orgs' lists orgs you belong to")
+            }
+        }
+        if contains(note, "not a member") {
+            eprintln("machin-365: ask an org admin to add you: auth member add " + slug + " " + c.email)
+        }
+        return 1
+    }
+    lr := parse(resp, LoginResp{})
+    if lr.tokens.access_token == "" {
+        eprintln("machin-365: switch-org response missing access_token")
+        return 1
+    }
+    c.token = lr.tokens.access_token
+    c.refresh_token = lr.tokens.refresh_token
+    c.org = slug
+    save_config(c)
+    println("org: " + slug + " on " + server)
+    return code
+}

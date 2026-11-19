@@ -68,6 +68,10 @@ func dispatch(a) (code) {
         if len(a) > 2 { sub = a[2] }
         if sub == "login" { return cmd_auth_login(a) }
         if sub == "signup" { return cmd_auth_signup(a) }
+        if sub == "member" { return cmd_auth_member(a) }
+        if sub == "memberships" { return cmd_auth_memberships(a) }
+        if sub == "orgs" { return cmd_auth_orgs(a) }
+        if sub == "switch-org" { return cmd_auth_switch_org(a) }
         if sub == "status" || sub == "logout" {
             if len(a) > 3 {
                 usage_fail("unexpected argument '" + a[3] + "'",
@@ -77,7 +81,7 @@ func dispatch(a) (code) {
             if sub == "status" { cmd_auth_status() } else { cmd_auth_logout() }
             return code
         }
-        eprintln("usage: machin-365 auth <login|signup|status|logout>")
+        eprintln("usage: machin-365 auth <login|signup|member|memberships|orgs|switch-org|status|logout>")
         return 2
     }
     if cmd == "config" { return cmd_config(a) }
