@@ -11,6 +11,7 @@ func print_usage() {
     println("  catalog [--refresh]           list apps; --refresh pulls ${server}/catalog.json")
     println("  install <id> [--bin PATH]     install an app (release asset or local binary)")
     println("  uninstall <id>                 remove an installed app (keeps data/<id>/)")
+    println("  prune                         drop .desktop entries whose home/binary is gone")
     println("  run <id> [args...]            run an installed app")
     println("  auth login --server URL --email E --password P [--org SLUG]")
     println("  auth signup --server URL --email E --password P [--name N] [--org SLUG]")

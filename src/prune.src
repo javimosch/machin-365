@@ -1,0 +1,159 @@
+// prune.src — garbage-collect stale .desktop entries. install writes one
+// entry per (app, suite home) into the user applications dir, and
+// uninstall only removes entries for the suite home it runs under — so an
+// entry whose home was deleted (rm -rf, throwaway MACHIN_365_HOME) or
+// whose baked Exec= suite binary moved away used to sit in the OS app
+// menu forever. prune_desktops() sweeps desktop_dir() and removes entries
+// that can never launch again, while leaving every entry that still points
+// at a live home+binary untouched — whichever suite home owns it.
+
+// desktop_field returns the value of the first line in desktop file
+// contents c starting with prefix (e.g. "Exec=" or the full
+// "Environment=MACHIN_365_HOME="), or "" when absent. The match is
+// line-anchored so a Name=/Comment= value cannot spoof the key.
+func desktop_field(c, prefix) {
+    v := ""
+    p := index(c, "\n" + prefix)
+    start := -1
+    if p >= 0 {
+        start = p + 1
+    } else if has_prefix(c, prefix) {
+        start = 0
+    }
+    if start < 0 { return v }
+    rest := substr(c, start + len(prefix), len(c))
+    e := index(rest, "\n")
+    if e >= 0 { rest = substr(rest, 0, e) }
+    return trim(rest)
+}
+
+// desktop_exec_token extracts the first token of an Exec= value — the
+// program the entry launches — still in its written (possibly quoted)
+// form, or "" when the value is empty or a quoted token never closes.
+func desktop_exec_token(line) {
+    if line == "" { return "" }
+    if substr(line, 0, 1) == "\"" {
+        i := 1
+        while i < len(line) {
+            ch := substr(line, i, i + 1)
+            if ch == "\\" {
+                i = i + 2
+            } else {
+                if ch == "\"" { return substr(line, 0, i + 1) }
+                i = i + 1
+            }
+        }
+        return ""
+    }
+    i := 0
+    while i < len(line) {
+        ch := substr(line, i, i + 1)
+        if ch == " " || ch == "\t" { return substr(line, 0, i) }
+        i = i + 1
+    }
+    return line
+}
+
+// desktop_unquote reverses desktop_quote: strips the surrounding double
+// quotes and collapses each backslash escape to the escaped char (the
+// writer only ever emits backslash+char pairs).
+func desktop_unquote(tok) {
+    s := ""
+    i := 1
+    end := len(tok) - 1
+    while i < end {
+        ch := substr(tok, i, i + 1)
+        if ch == "\\" && i + 1 < end {
+            i = i + 1
+            ch = substr(tok, i, i + 1)
+        }
+        s = s + ch
+        i = i + 1
+    }
+    return s
+}
+
+// exec_target_alive reports whether the program an Exec token names can
+// still be launched: absolute paths are stat'ed, bare names resolved
+// through PATH — the same lookup the desktop entry would perform.
+// Relative paths return true: when in doubt the entry stays.
+func exec_target_alive(tok) {
+    p := tok
+    if substr(p, 0, 1) == "\"" && len(p) > 1 { p = desktop_unquote(p) }
+    if substr(p, 0, 1) == "/" {
+        dc, _, _ := exec("test -e " + shell_quote(p))
+        return dc == 0
+    }
+    if index(p, "/") < 0 {
+        _, o, _ := exec("command -v " + shell_quote(p))
+        return trim(o) != ""
+    }
+    return true
+}
+
+// desktop_dead_reason returns why a .desktop entry can never launch
+// again — the baked MACHIN_365_HOME dir is gone, or the Exec= program is
+// gone — or "" when the entry still points at something alive (or cannot
+// be proven dead, in which case it is kept).
+func desktop_dead_reason(c) {
+    home := desktop_field(c, "Environment=MACHIN_365_HOME=")
+    if home != "" && !is_dir(home) {
+        return "suite home " + home + " is gone"
+    }
+    tok := desktop_exec_token(desktop_field(c, "Exec="))
+    if tok == "" { return "" }
+    if !exec_target_alive(tok) {
+        d := tok
+        if substr(d, 0, 1) == "\"" { d = desktop_unquote(d) }
+        return "launcher " + d + " is gone"
+    }
+    return ""
+}
+
+// prune_desktops removes every machin-365-*.desktop entry in desktop_dir()
+// that desktop_dead_reason proves can never launch again, printing one
+// line per removal. Returns the number removed.
+func prune_desktops() (removed) {
+    removed = 0
+    d := desktop_dir()
+    if !is_dir(d) { return removed }
+    names := list_dir(d)
+    i := 0
+    while i < len(names) {
+        n := names[i]
+        if has_prefix(n, "machin-365-") && has_suffix(n, ".desktop") {
+            p := d + "/" + n
+            why := desktop_dead_reason(read_file(p))
+            if why != "" {
+                remove(p)
+                println("  removed " + p + " (" + why + ")")
+                removed = removed + 1
+            }
+        }
+        i = i + 1
+    }
+    return removed
+}
+
+// report_prune prints the one-line sweep outcome shared by `prune` and
+// the init-time sweep.
+func report_prune(n) {
+    if n == 0 {
+        println("no stale .desktop entries")
+        return
+    }
+    w := "entries"
+    if n == 1 { w = "entry" }
+    println("pruned " + str(n) + " stale .desktop " + w)
+}
+
+func cmd_prune(a) (code) {
+    code = 0
+    if len(a) > 2 {
+        usage_fail("unexpected argument '" + a[2] + "'", "usage: machin-365 prune")
+        return 2
+    }
+    n := prune_desktops()
+    report_prune(n)
+    return code
+}
