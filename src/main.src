@@ -40,6 +40,8 @@ func cmd_init() {
         eprintln("machin-365: warning: MACHIN_365_HOME is set but the bkn port is the " +
             "shared default 17630 — set MACHIN_365_BKN_PORT to run multiple suite homes")
     }
+    n := prune_desktops()
+    if n > 0 { report_prune(n) }
     println("")
     println("next: machin-365 catalog   — see available apps")
     println("      machin-365 auth login --server URL --email E --password P")
@@ -59,6 +61,7 @@ func dispatch(a) (code) {
     if cmd == "catalog" || cmd == "apps" { return cmd_catalog(a) }
     if cmd == "install" { return cmd_install(a) }
     if cmd == "uninstall" { return cmd_uninstall(a) }
+    if cmd == "prune" { return cmd_prune(a) }
     if cmd == "run" { return cmd_run(a) }
     if cmd == "auth" {
         sub := ""

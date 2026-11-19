@@ -33,6 +33,7 @@ machin-365 catalog [--refresh]      # apps + install state; --refresh pulls ${se
 machin-365 install tasks            # release asset, or:
 machin-365 install tasks --bin ./build/machin-tasks   # local build
 machin-365 uninstall tasks          # remove app; data/tasks/ is kept
+machin-365 prune                     # drop .desktop entries whose home/binary is gone
 machin-365 run tasks                # launch (also in your OS app menu)
 machin-365 auth login --server URL --email E --password P [--org SLUG]
 machin-365 auth status | logout
@@ -113,7 +114,10 @@ $MACHIN_365_HOME (default ~/.local/share/machin-365)
 Installed apps also get a `.desktop` entry, so they appear in the OS app
 menu — no custom launcher needed. Entries launch through `machin-365 run`
 (service autostart included) with `MACHIN_365_HOME` baked in, and are
-namespaced per suite home so multiple homes can coexist.
+namespaced per suite home so multiple homes can coexist. Entries whose
+suite home was deleted or whose launcher binary moved away are dead —
+`init` sweeps them automatically and `machin-365 prune` does it on demand;
+live entries belonging to other suite homes are left untouched.
 
 ## Catalog
 
