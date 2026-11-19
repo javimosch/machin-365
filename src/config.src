@@ -21,15 +21,34 @@ func load_config() (c) {
     return parse(s, SuiteConfig{})
 }
 
-func save_config(c) {
-    system("mkdir -p '" + suite_home() + "'")
-    system("chmod 700 '" + suite_home() + "'")
-    // temp+rename: the file is never world-readable, not even between
-    // create and chmod (write_file alone would leave it at umask 0644)
+// save_config persists c to config.json. Returns 0 on success, 1 when any
+// step fails — a non-zero result means the config was NOT written, and the
+// caller must say so instead of reporting success. temp+rename keeps the
+// file owner-only: never world-readable, not even between create and
+// chmod (write_file alone would leave it at umask 0644), so a failed
+// chmod must not be followed by the mv.
+func save_config(c) (code) {
+    code = 1
+    // mv -f onto a directory moves the temp file INSIDE it instead of
+    // replacing it — the config would land at config.json/.config.json.tmp
+    // while we report success. Refuse a non-file destination up front.
+    if is_dir(config_path()) { return code }
+    if system("mkdir -p '" + suite_home() + "'") != 0 { return code }
+    if system("chmod 700 '" + suite_home() + "'") != 0 { return code }
     tmp := suite_home() + "/.config.json.tmp"
-    write_file(tmp, json(c))
-    system("chmod 600 '" + tmp + "'")
-    system("mv -f '" + tmp + "' '" + config_path() + "'")
+    if write_file(tmp, json(c)) < 0 {
+        remove(tmp)
+        return code
+    }
+    if system("chmod 600 '" + tmp + "'") != 0 {
+        remove(tmp)
+        return code
+    }
+    if system("mv -f '" + tmp + "' '" + config_path() + "'") != 0 {
+        remove(tmp)
+        return code
+    }
+    return 0
 }
 
 // canonical "a/b,c/d" form of a ref list: deduped, order preserved
@@ -54,7 +73,10 @@ func persist_coll_arg(refs) {
     c := load_config()
     if c.sync_collections == joined { return }
     c.sync_collections = joined
-    save_config(c)
+    if save_config(c) != 0 {
+        eprintln("machin-365: could not save sync_collections to " + config_path())
+        return
+    }
     eprintln("machin-365: sync_collections saved to config.json: " + joined)
 }
 
@@ -85,7 +107,11 @@ func cmd_config_set(a) (code) {
     }
     c := load_config()
     c.sync_collections = refs_to_csv(refs)
-    save_config(c)
+    if save_config(c) != 0 {
+        eprintln("machin-365: cannot write " + config_path() +
+            " — sync_collections not saved")
+        return 1
+    }
     if c.sync_collections == "" {
         println("sync_collections cleared — sync will probe /v1/collections")
     } else {

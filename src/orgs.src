@@ -360,7 +360,11 @@ func cmd_auth_switch_org(a) (code) {
     c.token = lr.tokens.access_token
     c.refresh_token = lr.tokens.refresh_token
     c.org = slug
-    save_config(c)
+    if save_config(c) != 0 {
+        eprintln("machin-365: switched org on server but " + config_path() +
+            " is not writable — not persisted")
+        return 1
+    }
     println("org: " + slug + " on " + server)
     return code
 }
