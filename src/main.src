@@ -78,6 +78,7 @@ func dispatch(a) (code) {
         if sub == "member" { return cmd_auth_member(a) }
         if sub == "memberships" { return cmd_auth_memberships(a) }
         if sub == "orgs" { return cmd_auth_orgs(a) }
+        if sub == "org" { return cmd_auth_org(a) }
         if sub == "switch-org" { return cmd_auth_switch_org(a) }
         if sub == "status" || sub == "logout" {
             if len(a) > 3 {
@@ -88,7 +89,7 @@ func dispatch(a) (code) {
             if sub == "status" { cmd_auth_status() } else { cmd_auth_logout() }
             return code
         }
-        eprintln("usage: machin-365 auth <login|signup|member|memberships|orgs|switch-org|status|logout>")
+        eprintln("usage: machin-365 auth <login|signup|member|memberships|orgs|org|switch-org|status|logout>")
         return 2
     }
     if cmd == "config" { return cmd_config(a) }

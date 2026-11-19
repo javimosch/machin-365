@@ -40,6 +40,7 @@ machin-365 run tasks                # launch (also in your OS app menu)
 machin-365 auth login --server URL --email E --password P [--org SLUG]
 machin-365 auth signup --server URL --email E --password P [--name N] [--org SLUG]
 machin-365 auth memberships | orgs       # orgs the account belongs to
+machin-365 auth org create <slug> [--name N]   # create an org (creator becomes owner)
 machin-365 auth member add <org> <user> [--role owner|admin|member]
 machin-365 auth member list <org> | member remove <org> <user>
 machin-365 auth switch-org <slug>       # re-scope the session, no password
@@ -82,7 +83,10 @@ owner/admin adds a teammate with `auth member add <org> <email>`; the
 teammate then signs in with `auth login --org <slug>` (or
 `auth switch-org <slug>` when already logged in) and sync converges on the
 same rows. `auth memberships`/`auth orgs` show which orgs an account can
-enter, `auth member list` shows an org's roster.
+enter, `auth member list` shows an org's roster. An account with no orgs —
+e.g. one whose signup org-create step failed — creates its own workspace
+with `auth org create <slug>` (the creator becomes owner; an org-less
+session is scoped to it automatically).
 
 ## Local-first data layer
 

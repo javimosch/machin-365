@@ -392,13 +392,13 @@ func cmd_auth_signup(a) (code) {
         note := auth_errnote(st, resp)
         eprintln("machin-365: org create failed: " + note)
         // The register call already succeeded — the account exists even
-        // though nothing was stored. Say so, and point at the way in when
-        // the org is simply taken: an admin adds the user, then login or
-        // switch-org scopes the session.
-        eprintln("machin-365: account " + email + " was registered — 'auth login' signs in" +
-            " (no org scope until you join one)")
+        // though nothing was stored. Say so, and point at the way in: an
+        // org admin can add the user to their org, or the user can create
+        // their own with `auth org create` (no admin needed).
+        eprintln("machin-365: account " + email + " was registered — 'auth login' signs in," +
+            " then 'auth org create <slug>' gives it an org")
         if contains(note, "already exists") {
-            eprintln("machin-365: to join '" + org + "', an org admin runs:" +
+            eprintln("machin-365: to join '" + org + "' instead, an org admin runs:" +
                 " auth member add " + org + " " + email)
         }
         return 1
