@@ -89,17 +89,18 @@ func dispatch(a) (code) {
         sub := ""
         if len(a) > 2 { sub = a[2] }
         if sub == "install" { return cmd_service_install(a) }
-        if sub == "start" || sub == "stop" || sub == "status" {
+        if sub == "start" || sub == "stop" || sub == "status" || sub == "reset" {
             if len(a) > 3 {
                 usage_fail("unexpected argument '" + a[3] + "'",
                     "usage: machin-365 service " + sub)
                 return 2
             }
             if sub == "start" { return cmd_service_start() }
+            if sub == "reset" { return cmd_service_reset() }
             if sub == "stop" { cmd_service_stop() } else { cmd_service_status() }
             return code
         }
-        eprintln("usage: machin-365 service <install|start|stop|status>")
+        eprintln("usage: machin-365 service <install|start|stop|status|reset>")
         return 2
     }
     if cmd == "sync" { return cmd_sync(a) }
