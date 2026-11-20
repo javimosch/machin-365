@@ -100,6 +100,32 @@ func elf_head(path) (h) {
     return h
 }
 
+// macho_file reports whether the file starts with a Mach-O or fat-Mach-O
+// magic — the native executable formats on darwin, which are not ELF.
+// A --bin build on macOS produces one, so probe_static must not reject
+// it for lacking an ELF header. (CAFEBABE also matches a Java .class;
+// the exec probe still decides whether it actually runs.)
+func macho_file(path) {
+    b := read_file_at(path, 0, 4)
+    if len(b) < 4 { return false }
+    a := byte_at(b, 0)
+    c := byte_at(b, 1)
+    d := byte_at(b, 2)
+    e := byte_at(b, 3)
+    // FE ED FA CE/CF — 32/64-bit big-endian; CE|CF FA ED FE — little-endian
+    if a == 0xfe {
+        return c == 0xed && d == 0xfa && (e == 0xce || e == 0xcf)
+    }
+    if a == 0xce || a == 0xcf {
+        return c == 0xfa && d == 0xed && e == 0xfe
+    }
+    // CA FE BA BE/BF — fat/universal; BE BA FE CA — byte-swapped fat
+    if a == 0xca {
+        return c == 0xfe && d == 0xba && (e == 0xbe || e == 0xbf)
+    }
+    return a == 0xbe && c == 0xba && d == 0xfe && e == 0xca
+}
+
 // host_machine maps uname -m to the ELF e_machine it produces; 0 when the
 // arch is unknown (the machine check is then skipped).
 func host_machine() {
@@ -142,17 +168,26 @@ func shebang_interp(path) {
     if cr >= 0 { s = substr(s, 0, cr) }
     s = trim(s)
     if len(s) <= 2 { return "" }
-    rest := trim(substr(s, 2, len(s) - 2))
+    rest := trim(substr(s, 2, len(s)))
     end := len(rest)
     i := 0
     while i < len(rest) {
-        c := substr(rest, i, 1)
+        c := substr(rest, i, i + 1)
         if c == " " || c == "\t" { end = i  break }
         i = i + 1
     }
     tok := substr(rest, 0, end)
     if tok == "/usr/bin/env" || tok == "/bin/env" { return "" }
     return tok
+}
+
+// has_shebang reports whether the file starts with "#!" — the marker that
+// makes execve hand the file to an interpreter. Distinct from
+// shebang_interp, which returns "" both for non-scripts and for
+// `#!…/env X` scripts whose interpreter resolves via PATH.
+func has_shebang(path) {
+    b := read_file_at(path, 0, 2)
+    return len(b) >= 2 && byte_at(b, 0) == 0x23 && byte_at(b, 1) == 0x21
 }
 
 // loader_failure reports whether stderr looks like the OS refusing to
@@ -200,10 +235,12 @@ func probe_exec(path) (err) {
     return ""
 }
 
-// probe_static is the exec-free half of the check: ELF architecture and
-// interpreter presence, script interpreter presence. "" means nothing
-// statically wrong — it does NOT prove the binary runs (GLIBC version
-// needs and missing .so files only show at exec time).
+// probe_static is the exec-free half of the check: that the file is a
+// recognizable executable format at all (ELF, Mach-O on darwin, or a #!
+// script), plus ELF architecture and interpreter presence, script
+// interpreter presence. "" means nothing statically wrong — it does NOT
+// prove the binary runs (GLIBC version needs and missing .so files only
+// show at exec time).
 func probe_static(path) (detail) {
     detail = ""
     if file_size(path) <= 0 { return "empty or unreadable file" }
@@ -222,6 +259,13 @@ func probe_static(path) (detail) {
     si := shebang_interp(path)
     if si != "" && file_size(si) <= 0 {
         return "missing script interpreter: " + si
+    }
+    // No ELF header and no #!: on darwin a Mach-O still counts; anywhere
+    // else nothing can exec the file — only a shell fallback could
+    // interpret it, which is exactly the deferred `run` failure the
+    // probe exists to catch at install time.
+    if !has_shebang(path) && !(has_prefix(platform(), "darwin") && macho_file(path)) {
+        return "not an executable file — expected an ELF/Mach-O binary or a #! script"
     }
     return ""
 }

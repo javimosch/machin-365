@@ -145,6 +145,18 @@ func write_desktop_file(id, app, bin) {
     }
 }
 
+// restore_app_bin puts back the previous apps/<id>/bin/<bin> after a
+// failed install verify — same contract as restore_bkn_bin: a rejected
+// install leaves the suite exactly as it was, registry entry included.
+func restore_app_bin(dst, oldb, had_old) {
+    if had_old {
+        write_file_bytes(dst, oldb)
+        system("chmod +x '" + dst + "'")
+    } else {
+        remove(dst)
+    }
+}
+
 func install_bin(id, app, src) (code) {
     code = 0
     dst := app_bin_dir(id) + "/" + app.bin
@@ -154,11 +166,16 @@ func install_bin(id, app, src) (code) {
         eprintln("machin-365: cannot read " + src)
         return 1
     }
+    // Snapshot the previous install so a failed probe restores it — a
+    // rejected reinstall must not leave the registry claiming a binary
+    // that is gone.
+    oldb := read_file_bytes(dst)
+    had_old := file_size(dst) > 0
     write_file_bytes(dst, b)
     system("chmod +x '" + dst + "'")
     detail := probe_binary(dst)
     if detail != "" {
-        remove(dst)
+        restore_app_bin(dst, oldb, had_old)
         eprintln("machin-365: " + app.name + " " + app.version +
             " cannot run on this host — not installed")
         eprintln("  " + detail)
@@ -191,11 +208,13 @@ func install_asset(id, app, asset) (code) {
     }
     dst := app_bin_dir(id) + "/" + app.bin
     system("mkdir -p '" + app_bin_dir(id) + "'")
+    oldb := read_file_bytes(dst)
+    had_old := file_size(dst) > 0
     system("mv -f '" + tmp + "' '" + dst + "'")
     system("chmod +x '" + dst + "'")
     detail := probe_binary(dst)
     if detail != "" {
-        remove(dst)
+        restore_app_bin(dst, oldb, had_old)
         eprintln("machin-365: " + app.name + " " + app.version +
             " cannot run on this host — not installed")
         eprintln("  " + detail)
