@@ -357,6 +357,10 @@ func cmd_auth_switch_org(a) (code) {
         eprintln("machin-365: switch-org response missing access_token")
         return 1
     }
+    // Org is the tenancy boundary sync enforces — moving the session to a
+    // different org while the local store still holds the old org's rows
+    // uploads them into the new org on the next pass.
+    auth_warn_account_change(c, c.server, c.email, slug)
     c.token = lr.tokens.access_token
     c.refresh_token = lr.tokens.refresh_token
     c.org = slug

@@ -332,6 +332,49 @@ func cmd_service_stop() {
     }
 }
 
+// `service reset` — wipe the local bkn database so a different account
+// starts from an empty store. Local rows carry no account partition and
+// sync pushes all of them under the current token, so after an account
+// switch this is the only way to keep the previous account's data out of
+// the new org. Stops this home's bkn first — deleting sqlite files under
+// a live server invites corruption — removes every bkn.db* file, then
+// restarts the service if it was running. Remote data is untouched: the
+// next sync pulls only what the current account can see.
+func cmd_service_reset() (code) {
+    code = 0
+    was := bkn_owner() == "ours"
+    if was {
+        cmd_service_stop()
+        if bkn_owner() == "ours" {
+            eprintln("machin-365: could not stop the local bkn — refusing to" +
+                " delete its database")
+            eprintln("machin-365: stop it manually ('service stop') and retry" +
+                " 'service reset'")
+            return 1
+        }
+    }
+    dir := suite_home() + "/bkn"
+    removed := 0
+    names := list_dir(dir)
+    i := 0
+    while i < len(names) {
+        n := names[i]
+        if has_prefix(n, "bkn.db") {
+            remove(dir + "/" + n)
+            removed = removed + 1
+        }
+        i = i + 1
+    }
+    if removed == 0 {
+        println("local bkn store is already empty — nothing to reset")
+    } else {
+        println("local bkn store reset — removed " + str(removed) +
+            " file(s) under " + dir + "/")
+    }
+    if was { cmd_service_start() }
+    return code
+}
+
 func cmd_service_status() {
     own := bkn_owner()
     if own == "ours" {

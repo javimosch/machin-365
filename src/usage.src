@@ -27,6 +27,7 @@ func print_usage() {
     println("  config set sync_collections a/b,c/d   set the sticky sync collection list")
     println("  service install [--bin PATH]  install the local bkn binary (probes + starts it)")
     println("  service start|stop|status     manage the local bkn instance")
+    println("  service reset                 wipe the local bkn database (all local data)")
     println("  sync [--collections a/b,c/d] [--watch [secs]]")
     println("                               replicate local bkn <-> remote bkn")
     println("")
