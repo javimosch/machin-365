@@ -380,6 +380,10 @@ func cmd_service_reset() (code) {
         }
     }
     remove(dir + "/.active-key")
+    // The sync manifest is the delete-propagation baseline: left in place,
+    // the next pass would read the wiped store as "every synced record was
+    // deleted" and tombstone the remote copy of all of it.
+    remove(manifest_path())
     if removed == 0 {
         println("local bkn store is already empty — nothing to reset")
     } else {

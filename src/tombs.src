@@ -70,3 +70,218 @@ func canon_tombs(base, tok, side) {
         i = i + 1
     }
 }
+
+// ---- sync manifest: the last-seen local id set per synced collection ----
+//
+// A DELETE on the store API removes the record and nothing else — no
+// tombstone — so the next pass reads it as remote-only and pulls it back.
+// The manifest is sync's own baseline: ids that were present locally at
+// the end of the last pass. An id that was synced but is absent now was
+// deleted by *some* client; sync writes the tombstone marker itself so
+// the delete propagates like an app delete would.
+//
+// File format (manifest_path, one section per synced collection):
+//   machin-365 sync-manifest v1
+//   account <key>
+//   ref "<json-escaped ref>"
+//   "<json-escaped id>"
+//   ...
+// The in-memory map is ref -> blob, where a blob is the section's id
+// lines verbatim (each a json-quoted id + "\n"), so load/save round-trip
+// without re-encoding.
+
+// Identity the baseline is bound to: the account key plus the local
+// endpoint. An account switch swaps the active bkn store
+// (bkn_store_switch) and a different MACHIN_365_LOCAL is a different
+// store — either way the old id set must not tombstone the new store's
+// contents, so a mismatch discards the baseline rather than reusing it.
+func manifest_key() {
+    c := load_config()
+    return account_store_key(c.server + "\n" + sync_local, c.email, c.org)
+}
+
+// blob <-> id list. blob lines are json()-quoted ids, one per line.
+func man_encode(ids) (blob) {
+    blob = ""
+    i := 0
+    while i < len(ids) {
+        blob = blob + json(ids[i]) + "\n"
+        i = i + 1
+    }
+    return blob
+}
+
+func man_decode(blob) (ids) {
+    ids = []string{}
+    rest := blob
+    while rest != "" {
+        e := index(rest, "\n")
+        line := rest
+        if e >= 0 {
+            line = substr(rest, 0, e)
+            rest = substr(rest, e + 1, len(rest))
+        } else {
+            rest = ""
+        }
+        if line != "" { ids = append(ids, parse(line, "")) }
+    }
+    return ids
+}
+
+// Load the manifest into ref -> blob plus the stored account key ("" when
+// the file is absent or has no account line — the caller treats any key
+// other than the current manifest_key() as no baseline).
+func load_manifest() (man, acct) {
+    man = make(map[string]string)
+    acct = ""
+    s := read_file(manifest_path())
+    if s == "" { return }
+    cur := ""
+    rest := s
+    while rest != "" {
+        e := index(rest, "\n")
+        line := rest
+        if e >= 0 {
+            line = substr(rest, 0, e)
+            rest = substr(rest, e + 1, len(rest))
+        } else {
+            rest = ""
+        }
+        if has_prefix(line, "account ") {
+            acct = substr(line, 8, len(line))
+        } else if has_prefix(line, "ref ") {
+            cur = parse(substr(line, 4, len(line)), "")
+        } else if has_prefix(line, "\"") && cur != "" {
+            man[cur] = man[cur] + line + "\n"
+        }
+    }
+    return
+}
+
+// Persist the post-pass baseline. Only refs still in the sync set are
+// written — a collection removed from sync loses its baseline, so a later
+// re-add starts fresh instead of tombstoning whatever vanished meanwhile.
+// temp+rename keeps a torn write from becoming a truncated baseline.
+func save_manifest(man, acct, refs) {
+    s := "machin-365 sync-manifest v1\naccount " + acct + "\n"
+    i := 0
+    while i < len(refs) {
+        ref := refs[i]
+        blob := man[ref]
+        if blob != "" { s = s + "ref " + json(ref) + "\n" + blob }
+        i = i + 1
+    }
+    tmp := suite_home() + "/.sync-manifest.tmp"
+    if write_file(tmp, s) < 0 {
+        eprintln("machin-365: could not write " + manifest_path())
+        return
+    }
+    if system("mv -f '" + tmp + "' '" + manifest_path() + "'") != 0 {
+        remove(tmp)
+        eprintln("machin-365: could not write " + manifest_path())
+    }
+}
+
+// Ids that were in ref's last-seen local set but are absent from the
+// current local fetch (lr) AND would survive the current tombstones on
+// the remote copy (rr): a tombstone only counts when it is newer than the
+// record's _mtime, so an existing-but-older marker (edit-after-delete)
+// still needs a fresh one. No baseline for ref (first sync, new
+// collection, reset manifest) returns empty — an empty baseline must
+// never tombstone anything.
+func tomb_missing_ids(ref, lr, rr, tm, man) (ids) {
+    ids = []string{}
+    blob := man[ref]
+    if blob == "" { return ids }
+    cur := make(map[string]int)
+    i := 0
+    while i < len(lr) {
+        id := rec_id(lr[i])
+        if id != "" { cur[id] = 1 }
+        i = i + 1
+    }
+    old := man_decode(blob)
+    i = 0
+    while i < len(old) {
+        id := old[i]
+        if cur[id] == 0 {
+            rmt := 0
+            rrec := find_rec(rr, id)
+            if rrec != "" { rmt = rec_mtime(rrec) }
+            if tm[ref + "|" + id] <= rmt {
+                ids = append(ids, id)
+            }
+        }
+        i = i + 1
+    }
+    return ids
+}
+
+// POST a sync/tombstones marker for each vanished id — the same doc shape
+// apps write ({"ref","id":"ref|id","_mtime"}), so canon_tombs and
+// load_tombs treat them identically. Returns how many were accepted.
+func tomb_write_markers(ref, ids) (w) {
+    w = 0
+    mt := now_ms()
+    i := 0
+    while i < len(ids) {
+        doc := "{\"ref\":" + json(ref) + ",\"id\":" + json(ref + "|" + ids[i]) +
+            ",\"_mtime\":" + str(mt) + "}"
+        if push_doc(sync_local, sync_local_tok, sync_tomb_coll, doc, "local") {
+            w = w + 1
+        }
+        i = i + 1
+    }
+    return w
+}
+
+// Vanished-id handling for one ref, run inside sync_one_ref after both
+// sides are fetched and before the merge. When markers were written the
+// tombstone collection is re-synced so they reach the remote, and the
+// returned map is the reloaded tomb set so this pass's pre-delete removes
+// the remote copies immediately. tm is returned unchanged when nothing
+// was written (no baseline, no vanished ids, or every marker POST failed).
+func tomb_vanished_sync(ref, lr, rr, tm, man) (ntm) {
+    ntm = tm
+    need := tomb_missing_ids(ref, lr, rr, tm, man)
+    if len(need) == 0 { return ntm }
+    w := tomb_write_markers(ref, need)
+    if w == 0 { return ntm }
+    empty := make(map[string]int)
+    sync_one_ref(sync_tomb_coll, empty, man)
+    ntm = load_tombs()
+    perr("machin-365: sync: " + str(w) + " record(s) in " + ref +
+        " vanished locally without a tombstone — wrote delete markers" +
+        " so the deletes propagate (apps should POST sync/tombstones" +
+        " before DELETE)")
+    return ntm
+}
+
+// Load this pass's manifest baseline, discarding it when it was written
+// under a different account+endpoint identity (manifest_key) — a switched
+// store must not inherit the old store's id set.
+func manifest_begin() (man, ckey) {
+    man, acct := load_manifest()
+    ckey = manifest_key()
+    if acct != ckey {
+        if acct != "" {
+            perr("machin-365: sync: local store identity changed —" +
+                " previous sync manifest ignored")
+        }
+        man = make(map[string]string)
+    }
+    return
+}
+
+// Fold one just-merged ref into the next baseline. A complete local fetch
+// (sync_post_ok) makes the post-merge id set authoritative; an incomplete
+// one keeps the previous baseline so the next pass can still tell a real
+// delete from a bad page.
+func manifest_note(ref, man, man_new) {
+    if ref == sync_tomb_coll { return }
+    if sync_post_ok {
+        man_new[ref] = man_encode(sync_post_ids)
+    } else if man[ref] != "" {
+        man_new[ref] = man[ref]
+    }
+}
