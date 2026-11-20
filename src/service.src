@@ -336,17 +336,93 @@ func cmd_service_stop() {
     }
 }
 
+// Count what `service reset` would delete — the active store's bkn.db*,
+// every parked per-account store, and the owner marker — so the
+// confirmation prompt can state the blast radius. Returns the file
+// count and their total size in bytes.
+func reset_targets() (n, total) {
+    n = 0
+    total = 0
+    dir := suite_home() + "/bkn"
+    names := dir_names_prefixed(dir, "bkn.db")
+    i := 0
+    while i < len(names) {
+        _, sz, _ := stat(dir + "/" + names[i])
+        if sz > 0 { total = total + sz }
+        n = n + 1
+        i = i + 1
+    }
+    adir := dir + "/accounts"
+    if is_dir(adir) {
+        anames := list_dir(adir)
+        i = 0
+        while i < len(anames) {
+            _, sz, _ := stat(adir + "/" + anames[i])
+            if sz > 0 { total = total + sz }
+            n = n + 1
+            i = i + 1
+        }
+    }
+    k, sz, _ := stat(dir + "/.active-key")
+    if k == 1 {
+        n = n + 1
+        if sz > 0 { total = total + sz }
+    }
+    return
+}
+
 // `service reset` — wipe ALL local bkn data: the active store
 // (bkn/bkn.db*) and every per-account parked store (bkn/accounts/*.db*),
 // plus the active-owner marker. Local rows carry no account partition
 // beyond those files, so after an account switch this is the way to keep
 // a previous account's data from ever syncing again — or to free a
-// shared home entirely. Stops this home's bkn first — deleting sqlite
-// files under a live server invites corruption — then restarts it if it
-// was running. Remote data is untouched: the next sync pulls only what
-// the current account can see.
-func cmd_service_reset() (code) {
+// shared home entirely. The wipe is unrecoverable for anything sync
+// never covered, so it always needs an explicit go-ahead FIRST: a
+// [y/N] prompt when stdin is a TTY, --yes/-y otherwise — a declined or
+// missing confirmation leaves the service running and untouched. Then
+// the bkn is stopped — deleting sqlite files under a live server invites
+// corruption — the files removed, and the service restarted if it was
+// running. Remote data is untouched: the next sync pulls only what the
+// current account can see.
+func cmd_service_reset(a) (code) {
     code = 0
+    yes := false
+    i := 3
+    while i < len(a) {
+        arg := a[i]
+        if arg == "--yes" || arg == "-y" {
+            yes = true
+            i = i + 1
+            continue
+        }
+        if has_prefix(arg, "-") {
+            usage_fail("unknown flag '" + arg + "'",
+                "usage: machin-365 service reset [--yes]")
+            return 2
+        }
+        usage_fail("unexpected argument '" + arg + "'",
+            "usage: machin-365 service reset [--yes]")
+        return 2
+    }
+    n, total := reset_targets()
+    if n == 0 {
+        println("local bkn store is already empty — nothing to reset")
+        return code
+    }
+    if !yes {
+        if system("test -t 0") != 0 {
+            eprintln("machin-365: refusing to wipe the local bkn database" +
+                " without confirmation — re-run with --yes")
+            return 1
+        }
+        eprint("wipe the local bkn database at " + suite_home() + "/bkn/ (" +
+            str(n) + " file(s), " + str(total) + " bytes)? [y/N] ")
+        ans := to_lower(trim(input()))
+        if ans != "y" && ans != "yes" {
+            println("aborted — local bkn store left unchanged")
+            return 1
+        }
+    }
     was := bkn_owner() == "ours"
     if was {
         cmd_service_stop()
