@@ -233,7 +233,12 @@ func service_start_unpersist(old_port, old_tok) {
     }
 }
 
-func cmd_service_start() (code) {
+// service_start_for starts the local bkn for the given account identity —
+// the identity whose store must be active, which is NOT always the one in
+// config.json: bkn_store_switch calls this mid-switch, before auth has
+// persisted the new identity, so resolving from config would see the
+// PREVIOUS account and switch the store straight back (issue #74).
+func service_start_for(server, email, org) (code) {
     code = 0
     c := load_config()
     old_port := c.local_port
@@ -261,10 +266,10 @@ func cmd_service_start() (code) {
         eprintln("machin-365: set MACHIN_365_BKN_PORT or stop the other instance")
         return 1
     }
-    // The active store must belong to the configured identity: recovers a
-    // crashed account switch (parked archive present, bkn.db absent) and
-    // is a no-op when they already match.
-    bkn_store_switch(c.server, c.email, c.org, c.server, c.email, c.org)
+    // The active store must belong to the identity being started for:
+    // recovers a crashed account switch (parked archive present, bkn.db
+    // absent) and is a no-op when they already match.
+    bkn_store_switch(c.server, c.email, c.org, server, email, org)
     system("mkdir -p '" + suite_home() + "/bkn'")
     cmd := "BKN_DATA='" + bkn_db() + "' BKN_PORT=" + str(bkn_port()) +
         " BKN_ADMIN_TOKEN='" + c.local_token + "' '" + bkn_bin() + "' serve" +
@@ -301,6 +306,13 @@ func cmd_service_start() (code) {
     }
     service_start_unpersist(old_port, old_tok)
     return 1
+}
+
+// `service start` and the other lifecycle callers resolve the identity
+// from config.json — the persisted account is the one to serve.
+func cmd_service_start() (code) {
+    c := load_config()
+    return service_start_for(c.server, c.email, c.org)
 }
 
 func cmd_service_stop() {

@@ -113,7 +113,12 @@ func bkn_store_switch(prev_server, prev_email, prev_org, server, email, org) (ms
         i = i + 1
     }
     if msg == "" { write_file(bdir + "/.active-key", nkey) }
-    if was && cmd_service_start() != 0 {
+    // Restart through service_start_for with THIS switch's target
+    // identity — cmd_service_start would re-resolve the account from
+    // config.json, which still holds the previous identity until the
+    // caller (auth login/signup, switch-org) saves the new one, and the
+    // nested store switch would undo this one.
+    if was && service_start_for(server, email, org) != 0 {
         msg = msg + "store switched but the bkn did not restart — run 'service start'; "
     }
     return msg
