@@ -233,6 +233,82 @@ func service_start_unpersist(old_port, old_tok) {
     }
 }
 
+// The loopback admin token is identity-independent — it guards the local
+// bkn, not the account — so it is safe to ensure mid-store-switch, before
+// the caller saves the new identity to config.json. Returns the persisted
+// token, or "" when config.json cannot be written; the caller then reports
+// the restart failure instead of spawning an undiscoverable endpoint.
+func local_admin_token() {
+    c := load_config()
+    if c.local_token != "" { return c.local_token }
+    // 32 hex chars of randomness is enough for a loopback admin token.
+    c.local_token = to_hex(rand_bytes(16))
+    c.local_port = bkn_port()
+    if save_config(c) != 0 {
+        eprintln("machin-365: cannot write " + config_path() +
+            " — restarted bkn token would not be discoverable")
+        return ""
+    }
+    return c.local_token
+}
+
+// service_spawn is the spawn+verify half of cmd_service_start, split out
+// so bkn_store_switch can restart the server after a store swap WITHOUT
+// re-resolving identity from config.json — mid-switch that file still
+// names the previous account (the caller saves the new identity only
+// after the switch returns), and a nested cmd_service_start would switch
+// straight back to it. tok is the loopback admin token; callers ensure
+// it exists first. The already-running/foreign-port short-circuits live
+// here so both callers share them.
+func service_spawn(tok) (code) {
+    code = 0
+    own := bkn_owner()
+    if own == "ours" {
+        println("bkn already running at " + local_url())
+        return code
+    }
+    if own == "foreign" {
+        eprintln("machin-365: port " + str(bkn_port()) + " already serves a different bkn " +
+            "(pid " + bkn_health_pid() + ") — another MACHIN_365_HOME?")
+        eprintln("machin-365: set MACHIN_365_BKN_PORT or stop the other instance")
+        return 1
+    }
+    system("mkdir -p '" + suite_home() + "/bkn'")
+    cmd := "BKN_DATA='" + bkn_db() + "' BKN_PORT=" + str(bkn_port()) +
+        " BKN_ADMIN_TOKEN='" + tok + "' '" + bkn_bin() + "' serve" +
+        " >'" + bkn_log() + "' 2>&1 & echo $!"
+    _, out, err := exec(cmd)
+    if err != "" {
+        eprintln("machin-365: service start failed: " + err)
+        return 1
+    }
+    pid := trim(out)
+    write_file(bkn_pidfile(), pid + "\n")
+    // wait until the port serves THIS home's bkn — a foreign bkn that
+    // answers /_health must not satisfy the wait (or the claim).
+    i := 0
+    while i < 30 {
+        own = bkn_owner()
+        if own == "ours" {
+            hpid := bkn_health_pid()
+            if hpid != "" && hpid != pid { write_file(bkn_pidfile(), hpid + "\n") }
+            println("bkn running at " + local_url() + " (pid " + hpid + ")")
+            return code
+        }
+        if own == "foreign" { break }
+        sleep(100)
+        i = i + 1
+    }
+    own = bkn_owner()
+    if own == "foreign" {
+        eprintln("machin-365: port " + str(bkn_port()) + " is held by a different bkn — " +
+            "set MACHIN_365_BKN_PORT or stop the other instance")
+    } else {
+        eprintln("machin-365: bkn did not come up — see " + bkn_log())
+    }
+    return 1
+}
+
 func cmd_service_start() (code) {
     code = 0
     c := load_config()
@@ -264,43 +340,13 @@ func cmd_service_start() (code) {
     // The active store must belong to the configured identity: recovers a
     // crashed account switch (parked archive present, bkn.db absent) and
     // is a no-op when they already match.
-    bkn_store_switch(c.server, c.email, c.org, c.server, c.email, c.org)
-    system("mkdir -p '" + suite_home() + "/bkn'")
-    cmd := "BKN_DATA='" + bkn_db() + "' BKN_PORT=" + str(bkn_port()) +
-        " BKN_ADMIN_TOKEN='" + c.local_token + "' '" + bkn_bin() + "' serve" +
-        " >'" + bkn_log() + "' 2>&1 & echo $!"
-    _, out, err := exec(cmd)
-    if err != "" {
+    swmsg := bkn_store_switch(c.server, c.email, c.org, c.server, c.email, c.org)
+    if swmsg != "" { eprintln("machin-365: " + swmsg) }
+    if service_spawn(c.local_token) != 0 {
         service_start_unpersist(old_port, old_tok)
-        eprintln("machin-365: service start failed: " + err)
         return 1
     }
-    pid := trim(out)
-    write_file(bkn_pidfile(), pid + "\n")
-    // wait until the port serves THIS home's bkn — a foreign bkn that
-    // answers /_health must not satisfy the wait (or the claim).
-    i := 0
-    while i < 30 {
-        own = bkn_owner()
-        if own == "ours" {
-            hpid := bkn_health_pid()
-            if hpid != "" && hpid != pid { write_file(bkn_pidfile(), hpid + "\n") }
-            println("bkn running at " + local_url() + " (pid " + hpid + ")")
-            return code
-        }
-        if own == "foreign" { break }
-        sleep(100)
-        i = i + 1
-    }
-    own = bkn_owner()
-    if own == "foreign" {
-        eprintln("machin-365: port " + str(bkn_port()) + " is held by a different bkn — " +
-            "set MACHIN_365_BKN_PORT or stop the other instance")
-    } else {
-        eprintln("machin-365: bkn did not come up — see " + bkn_log())
-    }
-    service_start_unpersist(old_port, old_tok)
-    return 1
+    return code
 }
 
 func cmd_service_stop() {

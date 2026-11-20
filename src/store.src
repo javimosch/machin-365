@@ -48,8 +48,9 @@ func valid_store_key(k) {
 // activated in its place — so the previous account's rows can be neither
 // read by the new account's apps nor pushed by sync under the new token.
 // The bkn is stopped before any file moves (never swap sqlite files under
-// a live server) and restarted afterwards if it was running. Returns ""
-// or a diagnostic; callers report it — auth itself never fails on it.
+// a live server) and restarted afterwards if it was running — via
+// service_spawn, which never re-reads the still-stale config identity.
+// Returns "" or a diagnostic; callers report it — auth never fails on it.
 func bkn_store_switch(prev_server, prev_email, prev_org, server, email, org) (msg) {
     msg = ""
     bdir := suite_home() + "/bkn"
@@ -113,8 +114,19 @@ func bkn_store_switch(prev_server, prev_email, prev_org, server, email, org) (ms
         i = i + 1
     }
     if msg == "" { write_file(bdir + "/.active-key", nkey) }
-    if was && cmd_service_start() != 0 {
-        msg = msg + "store switched but the bkn did not restart — run 'service start'; "
+    if was {
+        // Restart via service_spawn, never cmd_service_start: config.json
+        // still names the PREVIOUS identity until the caller saves the
+        // new one, so a nested start would re-resolve the old key and
+        // switch straight back — silently undoing this swap.
+        tok := local_admin_token()
+        if tok == "" {
+            msg = msg + "store switched but the bkn token could not be" +
+                " saved — run 'service start'; "
+        } else if service_spawn(tok) != 0 {
+            msg = msg + "store switched but the bkn did not restart —" +
+                " run 'service start'; "
+        }
     }
     return msg
 }
