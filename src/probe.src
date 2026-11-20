@@ -155,6 +155,30 @@ func shebang_interp(path) {
     return tok
 }
 
+// exec_magic reports whether the file opens with bytes the kernel can
+// exec directly on this host: ELF or a #! script line everywhere, Mach-O
+// only on darwin (elsewhere the kernel rejects it and a shell fallback
+// would mask the failure). Anything else — a text file, a data blob —
+// can only ever be interpreted by a shell fallback or fail outright, so
+// it is not a valid install/run target no matter what `--version` does.
+func exec_magic(path) {
+    b := read_file_at(path, 0, 4)
+    if len(b) >= 2 && byte_at(b, 0) == 0x23 && byte_at(b, 1) == 0x21 { return true }
+    if len(b) < 4 { return false }
+    b0 := byte_at(b, 0)
+    b1 := byte_at(b, 1)
+    b2 := byte_at(b, 2)
+    b3 := byte_at(b, 3)
+    if b0 == 0x7f && b1 == 0x45 && b2 == 0x4c && b3 == 0x46 { return true }
+    _, u, _ := exec("uname -s")
+    if to_lower(trim(u)) != "darwin" { return false }
+    if b0 == 0xfe && b1 == 0xed && b2 == 0xfa && (b3 == 0xce || b3 == 0xcf) { return true }
+    if (b0 == 0xce || b0 == 0xcf) && b1 == 0xfa && b2 == 0xed && b3 == 0xfe { return true }
+    if b0 == 0xca && b1 == 0xfe && b2 == 0xba && (b3 == 0xbe || b3 == 0xbf) { return true }
+    if (b0 == 0xbe || b0 == 0xbf) && b1 == 0xba && b2 == 0xfe && b3 == 0xca { return true }
+    return false
+}
+
 // loader_failure reports whether stderr looks like the OS refusing to
 // start the binary — loader/interpreter errors — as opposed to the app
 // itself exiting non-zero (GUI app, no display, bad args), which must
@@ -218,6 +242,9 @@ func probe_static(path) (detail) {
             return "missing ELF interpreter: " + h.interp
         }
         return ""
+    }
+    if !exec_magic(path) {
+        return "not an executable: no ELF/Mach-O header and no #! shebang"
     }
     si := shebang_interp(path)
     if si != "" && file_size(si) <= 0 {
