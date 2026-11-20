@@ -80,6 +80,15 @@ func persist_coll_arg(refs) {
     eprintln("machin-365: sync_collections saved to config.json: " + joined)
 }
 
+func has_ref(refs, ref) {
+    i := 0
+    while i < len(refs) {
+        if refs[i] == ref { return true }
+        i = i + 1
+    }
+    return false
+}
+
 // `config set sync_collections a/b,c/d` — the explicit setter for the
 // sticky sync set (`sync --collections` writes the same field). An empty
 // value clears the override and returns discovery to the

@@ -10,9 +10,10 @@
 // then DELETEs the record. sync/tombstones is itself a synced collection,
 // so tombstones replicate like any doc. A record whose _mtime is older
 // than its tombstone is deleted on both sides; a newer _mtime
-// (edit-after-delete) wins and the record survives. Apps that bypass
-// tombstones will still see deletes resurrect — write the tombstone
-// first, then delete.
+// (edit-after-delete) wins and the record survives. Deletes that bypass
+// the protocol — a raw DELETE on the store API — are caught by the
+// last-seen manifest (seen.src): sync writes the tombstone marker
+// itself, so the delete propagates instead of resurrecting.
 //
 // Endpoints: config.json server/token = remote; local_port/local_token =
 // the service instance. Env overrides win for testing:
@@ -249,6 +250,9 @@ func sync_one_ref(ref, tm) {
     e0 := sync_err_count
     lr := fetch_records(sync_local, sync_local_tok, ref, "local")
     rr := fetch_records(sync_remote, sync_remote_tok, ref, "remote")
+    // manifest diff + auto-tombstones run on the fetched lists before any
+    // delete/merge writes — ok only when both fetches completed cleanly
+    seen_detect_ref(ref, lr, rr, tm, sync_err_count == e0)
 
     // pre-delete: any surviving record that loses to a tombstone goes away
     j := 0
@@ -314,6 +318,9 @@ func sync_one_ref(ref, tm) {
         }
         j = j + 1
     }
+    // refresh the manifest from the post-merge local store — pulled
+    // records count as seen, tombstone-deleted ones do not
+    seen_update_ref(ref)
     pout(ref + ": pushed=" + str(pushed) + " pulled=" + str(pulled) +
         " deleted=" + str(deleted) + " same=" + str(same) +
         " local=" + str(len(lr)) + " remote=" + str(len(rr)))
@@ -384,6 +391,9 @@ func sync_pass_once(refs) {
     sync_local_dead = false
     canon_tombs(sync_local, sync_local_tok, "local")
     canon_tombs(sync_remote, sync_remote_tok, "remote")
+    seen_load()
+    seen_prune(refs)
+    seen_tombs = 0
     empty := make(map[string]int)
     sync_one_ref(sync_tomb_coll, empty)
     tm := load_tombs()
@@ -392,6 +402,11 @@ func sync_pass_once(refs) {
         if refs[i] != sync_tomb_coll { sync_one_ref(refs[i], tm) }
         i = i + 1
     }
+    // auto-tombstones written during the merges above are already in the
+    // local sync/tombstones collection but missed its merge — run it once
+    // more so they reach the remote this pass, not the next one.
+    if seen_tombs > 0 { sync_one_ref(sync_tomb_coll, empty) }
+    seen_save()
     if sync_err_count > 0 {
         perr("sync incomplete: " + str(sync_err_count) + " call(s) failed this pass:")
         j := 0
@@ -475,13 +490,4 @@ func cmd_sync(a) (code) {
     sync_pass(refs)
     if sync_local_dead || sync_err_count > 0 { return 1 }
     return code
-}
-
-func has_ref(refs, ref) {
-    i := 0
-    while i < len(refs) {
-        if refs[i] == ref { return true }
-        i = i + 1
-    }
-    return false
 }

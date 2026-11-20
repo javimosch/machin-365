@@ -380,6 +380,18 @@ func cmd_service_reset() (code) {
         }
     }
     remove(dir + "/.active-key")
+    // the sync manifest describes the wiped stores — drop it too, or the
+    // next pass would read every remote record as a vanished local delete
+    // and auto-tombstone the whole remote collection
+    sdir := seen_dir()
+    if is_dir(sdir) {
+        snames := list_dir(sdir)
+        i = 0
+        while i < len(snames) {
+            remove(sdir + "/" + snames[i])
+            i = i + 1
+        }
+    }
     if removed == 0 {
         println("local bkn store is already empty — nothing to reset")
     } else {

@@ -1,0 +1,211 @@
+// seen.src — last-seen record manifest for sync delete detection.
+//
+// The store API's DELETE removes the row locally and nothing else: the
+// next sync treats the remote copy as remote-only and pulls it straight
+// back, so a delete through any client that does not know the tombstone
+// protocol silently resurrects (and then propagates to every other
+// synced device). Apps that know the protocol — machin-tasks' bkn_del —
+// POST a sync/tombstones marker first; every other client does not.
+//
+// To make deletes through ANY client propagate, each pass records the
+// local id set it saw per synced collection in
+// <suite_home>/sync-seen/<store-key>.seen (one "<ref>\t<id>\t<mtime>"
+// line per record). When an id seen last pass is gone locally while the
+// remote still holds it and no tombstone covers it, sync writes the
+// tombstone marker itself before merging — the delete then propagates
+// exactly like an app delete, on this pass, to every device.
+//
+// The manifest file is keyed by the same account-store key
+// bkn_store_switch uses, so a sign-in or switch-org activates a fresh
+// manifest for the store it swaps in — an empty manifest tombstones
+// nothing (first-sync safety), and one account's deletes can never be
+// written into another account's manifest. `service reset` wipes the
+// directory together with the databases; a manifest outliving its store
+// would read every remote record as a vanished local delete.
+
+// "ref|id" -> last-seen _mtime (0 = the record had none). Rebuilt per
+// pass: seen_load() reads the file, seen_detect_ref() diffs it before
+// each collection's merge, seen_update_ref() rewrites entries from the
+// post-merge local store, seen_save() writes the file back.
+var seen_map = make(map[string]int)
+
+// auto-tombstones written during the current pass — when >0 the pass
+// runs the tombstone collection's merge a second time so the new markers
+// reach the remote instead of waiting a pass.
+var seen_tombs = 0
+
+func seen_dir() { return suite_home() + "/sync-seen" }
+
+// the manifest belongs to the ACTIVE local store, which bkn_store_switch
+// partitions per account identity — key the file the same way so a store
+// swap never diffs one account's rows against another's manifest.
+func seen_key() {
+    c := load_config()
+    if c.email == "" { return "_unclaimed" }
+    return account_store_key(c.server, c.email, c.org)
+}
+
+func seen_path() { return seen_dir() + "/" + seen_key() + ".seen" }
+
+// Load the manifest into seen_map. A missing or unreadable file is an
+// empty manifest — the baseline pass records what is there and
+// tombstones nothing.
+func seen_load() {
+    seen_map = make(map[string]int)
+    s := read_file(seen_path())
+    if s == "" { return }
+    lines := split(s, "\n")
+    i := 0
+    while i < len(lines) {
+        f := split(lines[i], "\t")
+        if len(f) >= 3 {
+            ref := f[0]
+            id := f[1]
+            if ref != "" && id != "" {
+                seen_map[ref + "|" + id] = parse_int(f[2])
+            }
+        }
+        i = i + 1
+    }
+}
+
+// Drop manifest entries for collections no longer in the sync set — a
+// removed collection is unmanaged, and its stale ids must not
+// tombstone records if it is ever re-added.
+func seen_prune(refs) {
+    ks := keys(seen_map)
+    i := 0
+    while i < len(ks) {
+        k := ks[i]
+        p := index(k, "|")
+        ref := k
+        if p > 0 { ref = substr(k, 0, p) }
+        if p <= 0 || !has_ref(refs, ref) { delete(seen_map, k) }
+        i = i + 1
+    }
+}
+
+// Diff last pass's manifest against this pass's local records for ref.
+// An id that was local then and is absent now — still present remotely,
+// not already covered by a tombstone — gets a sync/tombstones marker
+// POSTed to the LOCAL store and tm[k] bumped in place, so this same
+// pass's merge deletes the remote copy instead of pulling it back. The
+// tombstone doc itself reaches the remote via the second tombstone
+// merge sync_pass_once runs when seen_tombs > 0.
+//
+// ok=false means either side's fetch reported errors — the record lists
+// may be partial, so detection does not run; last pass's entries stay
+// and the diff retries next pass. The manifest itself is NOT touched
+// here: seen_update_ref rebuilds it after the merge from the local
+// store's true post-merge state.
+func seen_detect_ref(ref, lr, rr, tm, ok) {
+    if ref == sync_tomb_coll || !ok { return }
+    pre := ref + "|"
+    lset := make(map[string]int)
+    i := 0
+    while i < len(lr) {
+        id := rec_id(lr[i])
+        if id != "" { lset[id] = 1 }
+        i = i + 1
+    }
+    ks := keys(seen_map)
+    n := 0
+    i := 0
+    while i < len(ks) {
+        k := ks[i]
+        if has_prefix(k, pre) {
+            id := substr(k, len(pre), len(k))
+            if !has(lset, id) {
+                rrec := find_rec(rr, id)
+                if rrec != "" && !tomb_wins(tm, ref, id, seen_map[k]) {
+                    // the marker must out-date the remote record's
+                    // _mtime for tomb_wins to kill it — now_ms() covers
+                    // every honest timestamp, rmt+1 covers clock skew
+                    rmt := rec_mtime(rrec)
+                    t := now_ms()
+                    if rmt >= t { t = rmt + 1 }
+                    body := "{\"ref\":" + json(ref) + ",\"id\":" + json(pre + id) +
+                        ",\"_mtime\":" + str(t) + "}"
+                    st, resp, err := api_post(sync_local, sync_local_tok,
+                        "/v1/store/" + sync_tomb_coll, body)
+                    if err == "" && (st == 200 || st == 201) {
+                        tm[k] = t
+                        seen_tombs = seen_tombs + 1
+                        n = n + 1
+                    } else {
+                        sync_note_err("local", "POST tombstone " + ref + "/" + id,
+                            st, err, resp)
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    if n > 0 {
+        perr("machin-365: " + ref + ": wrote " + str(n) +
+            " sync/tombstones marker(s) for record(s) deleted locally" +
+            " without one — deletes via the store API now propagate")
+    }
+}
+
+// Rebuild ref's manifest entries from the LOCAL store as it stands after
+// the merge — records pulled this pass are in, tombstone-deleted ones
+// are out, so next pass's diff sees exactly what a client could have
+// deleted. Only ids that made it into the local store are tracked:
+// remote-only records are not "seen locally", so a record whose pull
+// keeps failing can never be mistaken for a local delete. A failed
+// fetch keeps last pass's entries — the diff then re-runs against them
+// next pass, which is the safe direction.
+func seen_update_ref(ref) {
+    if ref == sync_tomb_coll { return }
+    e0 := sync_err_count
+    lr := fetch_records(sync_local, sync_local_tok, ref, "local")
+    if sync_err_count != e0 { return }
+    pre := ref + "|"
+    ks := keys(seen_map)
+    i := 0
+    while i < len(ks) {
+        k := ks[i]
+        if has_prefix(k, pre) { delete(seen_map, k) }
+        i = i + 1
+    }
+    i := 0
+    while i < len(lr) {
+        lrec := lr[i]
+        id := rec_id(lr[i])
+        if id != "" { seen_map[pre + id] = rec_mtime(lrec) }
+        i = i + 1
+    }
+}
+
+// Write the manifest back. temp+rename like save_config so a crash
+// mid-write cannot leave a truncated baseline; mode 600 because record
+// ids are user data. Failure is reported but non-fatal — a lost manifest
+// degrades to baseline behavior (no auto-tombstones), never to wrong
+// ones.
+func seen_save() {
+    system("mkdir -p '" + seen_dir() + "'")
+    ks := keys(seen_map)
+    out := ""
+    i := 0
+    while i < len(ks) {
+        k := ks[i]
+        p := index(k, "|")
+        if p > 0 {
+            out = out + substr(k, 0, p) + "\t" + substr(k, p + 1, len(k)) +
+                "\t" + str(seen_map[k]) + "\n"
+        }
+        i = i + 1
+    }
+    tmp := seen_dir() + "/." + seen_key() + ".tmp"
+    if write_file(tmp, out) < 0 {
+        remove(tmp)
+        eprintln("machin-365: could not write " + seen_path())
+        return
+    }
+    system("chmod 600 '" + tmp + "'")
+    if system("mv -f '" + tmp + "' '" + seen_path() + "'") != 0 {
+        remove(tmp)
+        eprintln("machin-365: could not write " + seen_path())
+    }
+}
