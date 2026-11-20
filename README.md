@@ -32,6 +32,8 @@ cd machin-365 && ./build.sh         # static binary → build/machin-365
 machin-365 catalog [--refresh]      # apps + install state; --refresh pulls ${server}/catalog.json
 machin-365 install tasks            # release asset, or:
 machin-365 install tasks --bin ./build/machin-tasks   # local build
+                                  # (--bin must name the app's own binary —
+                                  #  basename is checked against the catalog)
 machin-365 uninstall tasks          # remove app; data/tasks/ is kept
 machin-365 prune                     # drop .desktop entries whose home/binary is gone
 machin-365 run tasks                # launch (also in your OS app menu)

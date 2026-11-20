@@ -73,24 +73,11 @@ func desktop_quote(s) {
     return "\"" + s + "\""
 }
 
-// self_path resolves the running suite binary to an absolute path so the
-// .desktop Exec line does not depend on the installing shell's PATH or cwd.
-// On Linux, exec() runs through a shell whose parent is this process, so
-// /proc/$PPID/exe is our own resolved binary — canonical even when argv[0]
-// is a bare name, a relative path, or a symlink. Elsewhere argv[0] is
-// resolved through PATH (bare name) or anchored at the cwd (relative path);
-// the last resort is argv[0] verbatim.
-func self_path() (p) {
-    p = args()[0]
-    _, u, _ := exec("uname -s")
-    if to_lower(trim(u)) == "linux" {
-        _, r, _ := exec("readlink /proc/$PPID/exe")
-        r = trim(r)
-        // readlink appends " (deleted)" when the binary was unlinked while
-        // running — the path itself is still what we want to record.
-        if contains(r, " (deleted)") { r = substr(r, 0, index(r, " (deleted)")) }
-        if r != "" { return r }
-    }
+// abs_path resolves p to an absolute path: a bare name goes through PATH
+// (command -v), a relative path anchors at the cwd; p itself when
+// resolution fails — the last resort is still what the user typed, which
+// is what diagnostics should show.
+func abs_path(p) {
     if index(p, "/") < 0 {
         _, o, _ := exec("command -v " + shell_quote(p))
         if trim(o) != "" { return trim(o) }
@@ -102,6 +89,26 @@ func self_path() (p) {
     _, pd, _ := exec("cd " + shell_quote(trim(d)) + " && pwd")
     if trim(pd) == "" { return p }
     return trim(pd) + "/" + trim(b)
+}
+
+// self_path resolves the running suite binary to an absolute path so the
+// .desktop Exec line does not depend on the installing shell's PATH or cwd.
+// On Linux, exec() runs through a shell whose parent is this process, so
+// /proc/$PPID/exe is our own resolved binary — canonical even when argv[0]
+// is a bare name, a relative path, or a symlink. Elsewhere abs_path()
+// resolves argv[0].
+func self_path() (p) {
+    p = args()[0]
+    _, u, _ := exec("uname -s")
+    if to_lower(trim(u)) == "linux" {
+        _, r, _ := exec("readlink /proc/$PPID/exe")
+        r = trim(r)
+        // readlink appends " (deleted)" when the binary was unlinked while
+        // running — the path itself is still what we want to record.
+        if contains(r, " (deleted)") { r = substr(r, 0, index(r, " (deleted)")) }
+        if r != "" { return r }
+    }
+    return abs_path(p)
 }
 
 // desktop_name namespaces the .desktop filename per suite home so installs
@@ -157,13 +164,60 @@ func restore_app_bin(dst, oldb, had_old) {
     }
 }
 
+// base_name returns the last path component of p.
+func base_name(p) {
+    _, b, _ := exec("basename " + shell_quote(p))
+    return trim(b)
+}
+
+// name_or_suffixed reports whether bn is base or base plus a build
+// suffix. The separator keeps "machin-tasks2"/"tasksfoo" from matching
+// while allowing machin-tasks-linux-amd64, machin-tasks.sh and
+// tasks-dev style names.
+func name_or_suffixed(bn, base) {
+    if bn == base { return true }
+    seps := []string{"-", ".", "_"}
+    i := 0
+    while i < len(seps) {
+        if has_prefix(bn, base + seps[i]) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// bin_name_ok is the cheap identity check for --bin: the source basename
+// must plausibly name the app's binary — the catalog bin field or the
+// app id, each allowing build suffixes. It cannot prove identity (a
+// renamed wrong binary still passes) but it catches the common case:
+// pointing --bin at the bkn server, another suite app, or a stray
+// script, which used to install cleanly and only fail when `run`
+// launched the wrong program.
+func bin_name_ok(bn, app) {
+    if app.bin != "" && name_or_suffixed(bn, app.bin) { return true }
+    if app.id != "" && name_or_suffixed(bn, app.id) { return true }
+    return false
+}
+
 func install_bin(id, app, src) (code) {
     code = 0
+    // Resolve once: diagnostics show the canonical path and the basename
+    // check runs on it, so "./build/../build/machin-tasks" and a PATH
+    // lookup name the file the user actually meant.
+    src_abs := abs_path(src)
     dst := app_bin_dir(id) + "/" + app.bin
     system("mkdir -p '" + app_bin_dir(id) + "'")
-    b := read_file_bytes(src)
+    b := read_file_bytes(src_abs)
     if len(b) == 0 {
-        eprintln("machin-365: cannot read " + src)
+        eprintln("machin-365: cannot read " + src_abs)
+        return 1
+    }
+    bn := base_name(src_abs)
+    if !bin_name_ok(bn, app) {
+        eprintln("machin-365: --bin " + src_abs + " is not the " + app.name +
+            " binary — install rejected")
+        eprintln("  basename '" + bn + "' does not match '" + app.bin + "'")
+        eprintln("  hint: build " + app.name + " from source (" + app.repo +
+            ") or pass its binary — e.g. --bin ./build/" + app.bin)
         return 1
     }
     // Snapshot the previous install so a failed probe restores it — a
@@ -179,13 +233,15 @@ func install_bin(id, app, src) (code) {
         eprintln("machin-365: " + app.name + " " + app.version +
             " cannot run on this host — not installed")
         eprintln("  " + detail)
+        eprintln("  --bin source: " + src_abs)
         return 1
     }
     reg := load_registry()
     reg = upsert_installed(reg, Installed{id: id, version: app.version, bin: dst, installed_at: str(now_ms())})
     save_registry(reg)
     write_desktop_file(id, app, dst)
-    println("installed " + app.name + " " + app.version + " → " + dst)
+    println("installed " + app.name + " " + app.version + " → " + dst +
+        "  (from " + src_abs + ")")
     return code
 }
 
