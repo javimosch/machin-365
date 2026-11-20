@@ -203,24 +203,31 @@ func auth_parse_args(a, with_name) (server, email, password, org, name, err_msg)
     return
 }
 
-// The suite home's local bkn is ONE store shared by every account that
-// signs in here — rows carry no account partition, and sync pushes
-// whatever it finds under the CURRENT token (the remote re-stamps org to
-// the caller). When the identity just authenticated differs from the one
-// config still describes, the previous account's data is about to be
-// uploaded into the new org: say so, and name the wipe.
+// The suite home's local bkn is partitioned per account: bkn_store_switch
+// parks each identity's database under bkn/accounts/<key>.db*, so a
+// sign-in as a different user can neither read nor sync the previous
+// account's rows (sync pushes only the ACTIVE store, under the current
+// token). This note still matters: it tells the user the store switched
+// and that 'service reset' remains the way to wipe a shared home clean.
 func auth_warn_account_change(prev, server, email, org) {
     if prev.email == "" && prev.token == "" { return }
     if to_lower(prev.email) == to_lower(email) &&
         prev.server == server && prev.org == org { return }
-    who := prev.email
-    if who == "" { who = "a previous account" }
-    into := email
-    if org != "" { into = into + " (org " + org + ")" }
-    eprintln("machin-365: warning: this home's local store still holds " + who +
-        "'s data — it is not partitioned by account.")
-    eprintln("machin-365: the next sync uploads it into " + into +
-        "; run 'machin-365 service reset' first to wipe the local store.")
+    if to_lower(prev.email) == to_lower(email) && prev.server == server {
+        eprintln("machin-365: note: org changed (" + prev.org + " → " + org +
+            ") — the local store switched to the new org's own namespace;" +
+            " the previous org's local data stays aside and is not synced here.")
+    } else {
+        who := prev.email
+        if who == "" { who = "a previous account" }
+        into := email
+        if org != "" { into = into + " (org " + org + ")" }
+        eprintln("machin-365: note: signed in as " + into + " — this home's" +
+            " local store is per-account; " + who + "'s local data stays" +
+            " under their own namespace and is not synced to " + into + ".")
+    }
+    eprintln("machin-365: 'machin-365 service reset' wipes ALL local data" +
+        " on this home.")
 }
 
 func cmd_auth_login(a) (code) {
@@ -283,6 +290,8 @@ func cmd_auth_login(a) (code) {
     }
 
     c := load_config()
+    swmsg := bkn_store_switch(c.server, c.email, c.org, server, email, org)
+    if swmsg != "" { eprintln("machin-365: " + swmsg) }
     auth_warn_account_change(c, server, email, org)
     c.server = server
     c.token = lr.tokens.access_token
@@ -401,6 +410,8 @@ func cmd_auth_signup(a) (code) {
         return 1
     }
     c := load_config()
+    swmsg := bkn_store_switch(c.server, c.email, c.org, server, email, org)
+    if swmsg != "" { eprintln("machin-365: " + swmsg) }
     auth_warn_account_change(c, server, email, org)
     c.server = server
     c.token = lr.tokens.access_token
@@ -463,8 +474,9 @@ func cmd_auth_logout() {
     }
     println("logged out (server and email kept)")
     if c.email != "" {
-        eprintln("machin-365: note: the local store still holds " + c.email +
-            "'s data — signing in as a different account syncs it to" +
-            " their org; 'service reset' wipes the local store")
+        eprintln("machin-365: note: the local store is per-account — " +
+            c.email + "'s data stays under their namespace; signing in" +
+            " as a different account switches to that account's store." +
+            " 'service reset' wipes all local data")
     }
 }

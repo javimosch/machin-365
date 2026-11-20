@@ -1,0 +1,121 @@
+// store.src — per-account partitioning of the local bkn store.
+// bkn/bkn.db* is always the ACTIVE database; each identity's parked copy
+// lives at bkn/accounts/<key>.db*, and bkn/.active-key records which key
+// owns the active files. See bkn_store_switch for the swap protocol.
+
+// entries of dir starting with prefix; empty when dir is missing
+func dir_names_prefixed(dir, prefix) (names) {
+    names = []string{}
+    if !is_dir(dir) { return names }
+    all := list_dir(dir)
+    i := 0
+    while i < len(all) {
+        if has_prefix(all[i], prefix) { names = append(names, all[i]) }
+        i = i + 1
+    }
+    return names
+}
+
+// The local store is partitioned per account. bkn/bkn.db* is always the
+// ACTIVE database; each identity's parked copy lives at
+// bkn/accounts/<key>.db*, and bkn/.active-key records which key owns the
+// active files (absent on pre-partitioning installs — the configured
+// identity is then the owner). The key covers server+email+org — org is
+// the tenancy boundary sync enforces, so switch-org gets its own store —
+// hashed so emails and URLs never become filenames.
+func account_store_key(server, email, org) {
+    return substr(sha256(server + "\n" + to_lower(email) + "\n" + org), 0, 24)
+}
+
+// store keys are 24 lowercase hex chars, or "_unclaimed" for a home with
+// no signed-in identity — anything else in .active-key is corruption, not
+// an owner, and must never reach a mv destination.
+func valid_store_key(k) {
+    if k == "_unclaimed" { return true }
+    if len(k) != 24 { return false }
+    i := 0
+    while i < 24 {
+        ch := substr(k, i, i + 1)
+        if !((ch >= "0" && ch <= "9") || (ch >= "a" && ch <= "f")) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// Switch the local bkn store to a different account identity. On an
+// identity change the active bkn.db* is parked under the PREVIOUS
+// identity's key and the incoming identity's parked store (if any) is
+// activated in its place — so the previous account's rows can be neither
+// read by the new account's apps nor pushed by sync under the new token.
+// The bkn is stopped before any file moves (never swap sqlite files under
+// a live server) and restarted afterwards if it was running. Returns ""
+// or a diagnostic; callers report it — auth itself never fails on it.
+func bkn_store_switch(prev_server, prev_email, prev_org, server, email, org) (msg) {
+    msg = ""
+    bdir := suite_home() + "/bkn"
+    if !is_dir(bdir) { return msg }
+    // who owns the active bkn.db* right now: the marker when present and
+    // sane, else the previous config identity (pre-partitioning installs)
+    pkey := trim(read_file(bdir + "/.active-key"))
+    if !valid_store_key(pkey) {
+        pkey = "_unclaimed"
+        if prev_email != "" {
+            pkey = account_store_key(prev_server, prev_email, prev_org)
+        }
+    }
+    nkey := "_unclaimed"
+    if email != "" {
+        nkey = account_store_key(server, email, org)
+    }
+    if pkey == nkey && file_size(bkn_db()) >= 0 {
+        // already this identity's store — just (re)establish the marker
+        write_file(bdir + "/.active-key", nkey)
+        return msg
+    }
+    was := bkn_owner() == "ours"
+    if was {
+        cmd_service_stop()
+        if bkn_owner() == "ours" {
+            return "could not stop the local bkn — local store left" +
+                " unchanged; run 'service stop' and retry the sign-in"
+        }
+    }
+    adir := bdir + "/accounts"
+    if pkey != nkey {
+        parked := dir_names_prefixed(bdir, "bkn.db")
+        if len(parked) > 0 {
+            system("mkdir -p " + shell_quote(adir))
+            pkdb := pkey + ".db"
+            i := 0
+            while i < len(parked) {
+                n := parked[i]
+                if system("mv -f " + shell_quote(bdir + "/" + n) + " " +
+                    shell_quote(adir + "/" + pkdb + substr(n, 6, len(n)))) != 0 {
+                    msg = msg + "could not park " + n + "; "
+                }
+                i = i + 1
+            }
+        }
+    }
+    // "<key>.db" as a prefix also catches "<key>.db-wal"/"-shm" — exactly
+    // the set to activate; a 24-hex prefix cannot collide across keys.
+    nkdb := nkey + ".db"
+    incoming := dir_names_prefixed(adir, nkdb)
+    i := 0
+    while i < len(incoming) {
+        n := incoming[i]
+        if n == nkdb || has_prefix(n, nkdb + "-") {
+            if system("mv -f " + shell_quote(adir + "/" + n) + " " +
+                shell_quote(bdir + "/bkn.db" + substr(n, len(nkdb), len(n)))) != 0 {
+                msg = msg + "could not activate " + n + "; "
+            }
+        }
+        i = i + 1
+    }
+    if msg == "" { write_file(bdir + "/.active-key", nkey) }
+    if was && cmd_service_start() != 0 {
+        msg = msg + "store switched but the bkn did not restart — run 'service start'; "
+    }
+    return msg
+}
+

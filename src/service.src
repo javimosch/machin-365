@@ -261,6 +261,10 @@ func cmd_service_start() (code) {
         eprintln("machin-365: set MACHIN_365_BKN_PORT or stop the other instance")
         return 1
     }
+    // The active store must belong to the configured identity: recovers a
+    // crashed account switch (parked archive present, bkn.db absent) and
+    // is a no-op when they already match.
+    bkn_store_switch(c.server, c.email, c.org, c.server, c.email, c.org)
     system("mkdir -p '" + suite_home() + "/bkn'")
     cmd := "BKN_DATA='" + bkn_db() + "' BKN_PORT=" + str(bkn_port()) +
         " BKN_ADMIN_TOKEN='" + c.local_token + "' '" + bkn_bin() + "' serve" +
@@ -332,14 +336,15 @@ func cmd_service_stop() {
     }
 }
 
-// `service reset` — wipe the local bkn database so a different account
-// starts from an empty store. Local rows carry no account partition and
-// sync pushes all of them under the current token, so after an account
-// switch this is the only way to keep the previous account's data out of
-// the new org. Stops this home's bkn first — deleting sqlite files under
-// a live server invites corruption — removes every bkn.db* file, then
-// restarts the service if it was running. Remote data is untouched: the
-// next sync pulls only what the current account can see.
+// `service reset` — wipe ALL local bkn data: the active store
+// (bkn/bkn.db*) and every per-account parked store (bkn/accounts/*.db*),
+// plus the active-owner marker. Local rows carry no account partition
+// beyond those files, so after an account switch this is the way to keep
+// a previous account's data from ever syncing again — or to free a
+// shared home entirely. Stops this home's bkn first — deleting sqlite
+// files under a live server invites corruption — then restarts it if it
+// was running. Remote data is untouched: the next sync pulls only what
+// the current account can see.
 func cmd_service_reset() (code) {
     code = 0
     was := bkn_owner() == "ours"
@@ -355,16 +360,26 @@ func cmd_service_reset() (code) {
     }
     dir := suite_home() + "/bkn"
     removed := 0
-    names := list_dir(dir)
+    names := dir_names_prefixed(dir, "bkn.db")
     i := 0
     while i < len(names) {
-        n := names[i]
-        if has_prefix(n, "bkn.db") {
-            remove(dir + "/" + n)
-            removed = removed + 1
-        }
+        remove(dir + "/" + names[i])
+        removed = removed + 1
         i = i + 1
     }
+    // every parked per-account store goes too — reset means ALL local
+    // data, not just the active account's — plus the owner marker
+    adir := dir + "/accounts"
+    if is_dir(adir) {
+        anames := list_dir(adir)
+        i = 0
+        while i < len(anames) {
+            remove(adir + "/" + anames[i])
+            removed = removed + 1
+            i = i + 1
+        }
+    }
+    remove(dir + "/.active-key")
     if removed == 0 {
         println("local bkn store is already empty — nothing to reset")
     } else {

@@ -358,8 +358,10 @@ func cmd_auth_switch_org(a) (code) {
         return 1
     }
     // Org is the tenancy boundary sync enforces — moving the session to a
-    // different org while the local store still holds the old org's rows
-    // uploads them into the new org on the next pass.
+    // different org switches the local store to that org's own namespace,
+    // so the old org's rows can be neither read nor synced here.
+    swmsg := bkn_store_switch(c.server, c.email, c.org, c.server, c.email, slug)
+    if swmsg != "" { eprintln("machin-365: " + swmsg) }
     auth_warn_account_change(c, c.server, c.email, slug)
     c.token = lr.tokens.access_token
     c.refresh_token = lr.tokens.refresh_token
