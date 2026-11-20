@@ -123,9 +123,17 @@ func bkn_store_switch(prev_server, prev_email, prev_org, server, email, org) (ms
         if tok == "" {
             msg = msg + "store switched but the bkn token could not be" +
                 " saved — run 'service start'; "
-        } else if service_spawn(tok) != 0 {
-            msg = msg + "store switched but the bkn did not restart —" +
-                " run 'service start'; "
+        } else {
+            rc := service_spawn(tok)
+            if rc == 3 {
+                // Alive but unbound at the deadline — a slow boot, not a
+                // failure; it should come up on its own.
+                msg = msg + "store switched; bkn still starting —" +
+                    " 'service status' to confirm; "
+            } else if rc != 0 {
+                msg = msg + "store switched but the bkn did not restart —" +
+                    " run 'service start'; "
+            }
         }
     }
     return msg
