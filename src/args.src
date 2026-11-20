@@ -103,6 +103,14 @@ func sync_parse_args(a) (watch, coll_arg, have_coll, err_msg) {
     if have_coll && trim(coll_arg) == "" {
         err_msg = "--collections requires a value" +
             " (e.g. --collections ns/coll,ns/coll2)"
+    } else if have_coll {
+        // the flag value is persisted verbatim — a malformed ref must die
+        // here, before it can be memorised or used for a sync pass (#48)
+        bad := first_bad_ref(parse_coll_list(coll_arg))
+        if bad != "" {
+            err_msg = "invalid collection ref '" + bad +
+                "' — expected ns/coll (e.g. --collections ns/coll,ns/coll2)"
+        }
     }
     return
 }

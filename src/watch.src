@@ -106,11 +106,14 @@ func sync_watch_emit(pass) {
 }
 
 // the --watch loop: run a pass with output captured, then emit either the
-// full block or the dedup heartbeat.
-func sync_watch(refs, watch) {
+// full block or the dedup heartbeat. have_coll marks an explicit
+// --collections flag: it is persisted to config.sync_collections once, after
+// the first clean pass, so a transient outage cannot shrink the sticky set.
+func sync_watch(refs, watch, have_coll) {
     println("watching every " + str(watch) + "s — ctrl-c to stop")
     flush()
     pass := 0
+    persisted := false
     while true {
         pass = pass + 1
         sync_cap = []string{}
@@ -118,6 +121,10 @@ func sync_watch(refs, watch) {
         sync_pass(refs)
         sync_capture = false
         sync_watch_emit(pass)
+        if have_coll && !persisted && sync_err_count == 0 && !sync_local_dead {
+            persist_coll_arg(refs)
+            persisted = true
+        }
         sleep(watch * 1000)
     }
 }
