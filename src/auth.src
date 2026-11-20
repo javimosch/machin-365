@@ -108,7 +108,13 @@ func auth_refresh_stored(server) (ntok, ok, fatal) {
     }
     c.token = lr.tokens.access_token
     if lr.tokens.refresh_token != "" { c.refresh_token = lr.tokens.refresh_token }
-    save_config(c)
+    if save_config(c) != 0 {
+        // Rotation already killed the stored refresh token server-side —
+        // losing the new pair here leaves the suite logged out. Say so.
+        perr("machin-365: cannot write " + config_path() +
+            " — refreshed tokens not persisted")
+        return
+    }
     ntok = c.token
     ok = true
     return
@@ -262,7 +268,11 @@ func cmd_auth_login(a) (code) {
     c.refresh_token = lr.tokens.refresh_token
     c.email = email
     c.org = org
-    save_config(c)
+    if save_config(c) != 0 {
+        eprintln("machin-365: login succeeded but " + config_path() +
+            " is not writable — credentials not saved")
+        return 1
+    }
     println("logged in to " + server + " as " + email)
     if org != "" {
         note := ""
@@ -375,7 +385,11 @@ func cmd_auth_signup(a) (code) {
     c.refresh_token = lr.tokens.refresh_token
     c.email = email
     c.org = org
-    save_config(c)
+    if save_config(c) != 0 {
+        eprintln("machin-365: signup succeeded but " + config_path() +
+            " is not writable — credentials not saved")
+        return 1
+    }
     println("signed up " + email + " → org " + org + " on " + server)
     return code
 }
@@ -420,6 +434,10 @@ func cmd_auth_logout() {
     c := load_config()
     c.token = ""
     c.refresh_token = ""
-    save_config(c)
+    if save_config(c) != 0 {
+        eprintln("machin-365: could not clear tokens — " + config_path() +
+            " is not writable; still logged in")
+        return
+    }
     println("logged out (server and email kept)")
 }

@@ -25,13 +25,20 @@ func cmd_config(a) (code) {
     return code
 }
 
-func cmd_init() {
-    system("mkdir -p '" + suite_home() + "' '" + apps_dir() + "' '" + data_root() + "' '" + desktop_dir() + "'")
-    system("chmod 700 '" + suite_home() + "'")
+func cmd_init() (code) {
+    code = 0
+    msg := ensure_home()
+    if msg != "" {
+        eprintln("machin-365: " + msg)
+        return 1
+    }
     p := config_path()
     s := read_file(p)
     if s == "" {
-        save_config(load_config())
+        if save_config(load_config()) != 0 {
+            eprintln("machin-365: cannot write suite home " + suite_home())
+            return 1
+        }
         println("initialized " + suite_home())
     } else {
         println("already initialized: " + suite_home())
@@ -45,6 +52,7 @@ func cmd_init() {
     println("")
     println("next: machin-365 catalog   — see available apps")
     println("      machin-365 auth login --server URL --email E --password P")
+    return code
 }
 
 func dispatch(a) (code) {
@@ -55,8 +63,7 @@ func dispatch(a) (code) {
             usage_fail("unexpected argument '" + a[2] + "'", "usage: machin-365 init")
             return 2
         }
-        cmd_init()
-        return code
+        return cmd_init()
     }
     if cmd == "catalog" || cmd == "apps" { return cmd_catalog(a) }
     if cmd == "install" { return cmd_install(a) }

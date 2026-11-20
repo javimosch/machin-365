@@ -24,3 +24,32 @@ func desktop_dir() {
     if d == "" { d = env("HOME") + "/.local/share" }
     return d + "/applications"
 }
+
+// ensure_home creates the suite home tree and proves it is writable.
+// Returns "" on success, else a diagnostic for the caller to report.
+// mkdir -p exits 0 when the directory already exists — even when nothing
+// inside it can be written — so the only honest check is a real write:
+// the probe file stands in for config.json. init treats any failure as
+// fatal before it claims "initialized".
+func ensure_home() (msg) {
+    msg = ""
+    if system("mkdir -p '" + suite_home() + "' '" + apps_dir() + "' '" + data_root() + "'") != 0 {
+        msg = "cannot create suite home " + suite_home()
+        return
+    }
+    // The desktop dir lives under XDG_DATA_HOME/HOME — outside the suite
+    // home — and only feeds best-effort .desktop entries, so its creation
+    // is not part of the writability contract.
+    system("mkdir -p '" + desktop_dir() + "'")
+    if system("chmod 700 '" + suite_home() + "'") != 0 {
+        msg = "cannot secure suite home " + suite_home() + " (chmod 700 failed)"
+        return
+    }
+    pp := suite_home() + "/.home-probe"
+    if write_file(pp, "ok") < 0 {
+        msg = "cannot write suite home " + suite_home()
+        return
+    }
+    remove(pp)
+    return
+}

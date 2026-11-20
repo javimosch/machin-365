@@ -227,7 +227,10 @@ func service_start_unpersist(old_port, old_tok) {
     c := load_config()
     c.local_port = old_port
     c.local_token = old_tok
-    save_config(c)
+    if save_config(c) != 0 {
+        eprintln("machin-365: could not restore config — " + config_path() +
+            " is not writable")
+    }
 }
 
 func cmd_service_start() (code) {
@@ -241,7 +244,11 @@ func cmd_service_start() (code) {
     }
     // persist port+token — apps discover the endpoint via config.json
     c.local_port = bkn_port()
-    save_config(c)
+    if save_config(c) != 0 {
+        eprintln("machin-365: cannot write " + config_path() +
+            " — service endpoint would not be discoverable")
+        return 1
+    }
     own := bkn_owner()
     if own == "ours" {
         println("bkn already running at " + local_url())
