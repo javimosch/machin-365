@@ -10,9 +10,12 @@
 // then DELETEs the record. sync/tombstones is itself a synced collection,
 // so tombstones replicate like any doc. A record whose _mtime is older
 // than its tombstone is deleted on both sides; a newer _mtime
-// (edit-after-delete) wins and the record survives. Apps that bypass
-// tombstones will still see deletes resurrect — write the tombstone
-// first, then delete.
+// (edit-after-delete) wins and the record survives. Deletes made through
+// the store API carry no tombstone, so sync keeps a manifest of last-seen
+// local ids (tombs.src) and writes the missing markers itself — see
+// tomb_missing_ids. The manifest is bound to the account+endpoint
+// identity and dropped by `service reset`, so a wiped or switched store
+// can never tombstone the remote copy of everything it used to hold.
 //
 // Endpoints: config.json server/token = remote; local_port/local_token =
 // the service instance. Env overrides win for testing:
@@ -41,6 +44,15 @@ var sync_local_dead = false
 var sync_remote_auth_err = false
 var sync_refresh_dead = false
 var sync_refresh_warned = false
+
+// Manifest plumbing (tombs.src): sync_fetch_ok reports whether the last
+// fetch_records call returned the whole collection — a partial local
+// fetch must not feed delete detection or become the new baseline.
+// sync_post_ok/sync_post_ids carry the just-processed ref's post-merge
+// local id set back to sync_pass_once for the manifest update.
+var sync_fetch_ok = true
+var sync_post_ok = false
+var sync_post_ids = []string{}
 
 // "HTTP 403 <server message>" style detail; transport errors pass through.
 func http_errnote(st, err, resp) {
@@ -108,8 +120,11 @@ func local_alive() {
 }
 
 // fetch every record of a collection as raw JSON objects, paginated.
+// sync_fetch_ok ends true only when every page arrived — callers that
+// persist or diff the result (the sync manifest) must check it.
 func fetch_records(base, tok, ref, side) (recs) {
     recs = []string{}
+    sync_fetch_ok = true
     off := 0
     while true {
         st, body, err := api_get(base, tok, "/v1/store/" + ref +
@@ -117,6 +132,7 @@ func fetch_records(base, tok, ref, side) (recs) {
         if err != "" || st != 200 {
             if side == "remote" && is_private_admin_err(st, body) && remote_provision(ref) { continue }
             sync_note_err(side, "GET /v1/store/" + ref, st, err, body)
+            sync_fetch_ok = false
             break
         }
         i := 0
@@ -187,68 +203,30 @@ func push_doc(base, tok, ref, rec, side) {
     return ok
 }
 
-// comma-separated list → refs ("a/b, c/d" tolerates spaces)
-func parse_coll_list(s) (refs) {
-    refs = []string{}
-    cur := ""
-    i := 0
-    while i <= len(s) {
-        ch := ","
-        if i < len(s) { ch = substr(s, i, i + 1) }
-        if ch == "," {
-            r := trim(cur)
-            if r != "" { refs = append(refs, r) }
-            cur = ""
-        } else {
-            cur = cur + ch
-        }
-        i = i + 1
-    }
-    return refs
-}
-
-// collection discovery: --collections arg > config.sync_collections >
-// GET /v1/collections (Go bkn only — machin-bkn has no HTTP list route).
-// coll_arg is the already-parsed --collections/--coll value ("" = flag absent).
-func discover_refs(coll_arg) (refs) {
-    refs = []string{}
-    if coll_arg != "" { return parse_coll_list(coll_arg) }
-    c := load_config()
-    if c.sync_collections != "" { return parse_coll_list(c.sync_collections) }
-    // probe both sides, union what each exposes
-    i := 0
-    while i < 2 {
-        base := sync_remote
-        tok := sync_remote_tok
-        if i == 1 { base = sync_local  tok = sync_local_tok }
-        st, body, err := api_get(base, tok, "/v1/collections")
-        if err == "" && st == 200 {
-            j := 0
-            while true {
-                r, e := json_get(body, ".collections[" + str(j) + "].ref")
-                if e != "" { break }
-                ref := parse(r, "")
-                if !has_ref(refs, ref) { refs = append(refs, ref) }
-                j = j + 1
-            }
-        }
-        i = i + 1
-    }
-    return refs
-}
-
 // merge one collection both ways. tm maps "ref|id" -> tombstone _mtime;
 // records older than their tombstone are DELETE'd on their side and then
 // treated as absent, so they cannot resurrect. An empty tm disables
-// tombstone handling (used for the tombstone collection itself).
-func sync_one_ref(ref, tm) {
+// tombstone handling (used for the tombstone collection itself). man is
+// the sync manifest (tombs.src): store-API deletes leave no marker, so
+// vanished baseline ids get one written before the merge. On return
+// sync_post_ok/sync_post_ids describe this ref's post-merge local ids.
+func sync_one_ref(ref, tm, man) {
     pushed := 0
     pulled := 0
     same := 0
     deleted := 0
     e0 := sync_err_count
     lr := fetch_records(sync_local, sync_local_tok, ref, "local")
+    lok := sync_fetch_ok
     rr := fetch_records(sync_remote, sync_remote_tok, ref, "remote")
+
+    // Only a COMPLETE local fetch may feed delete detection — a partial
+    // page would read missing records as deletes. tomb_vanished_sync
+    // reloads tm when it writes markers so pre-delete sees them.
+    if lok && ref != sync_tomb_coll {
+        tm = tomb_vanished_sync(ref, lr, rr, tm, man)
+    }
+    post := []string{}
 
     // pre-delete: any surviving record that loses to a tombstone goes away
     j := 0
@@ -284,6 +262,7 @@ func sync_one_ref(ref, tm) {
         rrec := find_rec(rr, id)
         rdead := rrec != "" && tomb_wins(tm, ref, id, rec_mtime(rrec))
         if !ldead {
+            if id != "" { post = append(post, id) }
             if rrec == "" || rdead {
                 // local-only (or remote copy dead) → push
                 if push_doc(sync_remote, sync_remote_tok, ref, lrec, "remote") { pushed = pushed + 1 }
@@ -309,11 +288,16 @@ func sync_one_ref(ref, tm) {
             lrec := find_rec(lr, id)
             lhas := lrec != "" && !tomb_wins(tm, ref, id, rec_mtime(lrec))
             if !lhas {
-                if push_doc(sync_local, sync_local_tok, ref, rrec, "local") { pulled = pulled + 1 }
+                if push_doc(sync_local, sync_local_tok, ref, rrec, "local") {
+                    pulled = pulled + 1
+                    if id != "" { post = append(post, id) }
+                }
             }
         }
         j = j + 1
     }
+    sync_post_ids = post
+    sync_post_ok = lok
     pout(ref + ": pushed=" + str(pushed) + " pulled=" + str(pulled) +
         " deleted=" + str(deleted) + " same=" + str(same) +
         " local=" + str(len(lr)) + " remote=" + str(len(rr)))
@@ -384,14 +368,19 @@ func sync_pass_once(refs) {
     sync_local_dead = false
     canon_tombs(sync_local, sync_local_tok, "local")
     canon_tombs(sync_remote, sync_remote_tok, "remote")
+    man, ckey := manifest_begin()
     empty := make(map[string]int)
-    sync_one_ref(sync_tomb_coll, empty)
+    sync_one_ref(sync_tomb_coll, empty, man)
     tm := load_tombs()
+    man_new := make(map[string]string)
     i := 0
     while i < len(refs) {
-        if refs[i] != sync_tomb_coll { sync_one_ref(refs[i], tm) }
+        ref := refs[i]
+        if ref != sync_tomb_coll { sync_one_ref(ref, tm, man) }
+        manifest_note(ref, man, man_new)
         i = i + 1
     }
+    save_manifest(man_new, ckey, refs)
     if sync_err_count > 0 {
         perr("sync incomplete: " + str(sync_err_count) + " call(s) failed this pass:")
         j := 0
