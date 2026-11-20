@@ -1,0 +1,376 @@
+// tie_test.src — regression test for issue #37: equal _mtime with
+// different content must not count as `same` forever.
+//
+// Two in-process fake bkn store servers (local + remote) speak enough of
+// /v1/store — GET list/single, POST upsert, PATCH merge, DELETE — for the
+// real sync_pass_once to run against. Docs are stored WITHOUT their id
+// (bkn keys id separately and merges it back on read), PATCH is a real
+// shallow merge that leaves _mtime alone, and the remote stamps "org"
+// into every POSTed doc the way an org-scoped bkn does — so the test also
+// pins that the tenancy stamp alone never counts as a content difference.
+// Each server counts mutating requests so a converged pass can be proven
+// quiet (no push/pull churn).
+//
+// Run:  ./build.sh && machin test $(ls src/*.src | grep -v 'src/main.src') test/tie_test.src
+
+// unsigned JWT-shaped token: payload {"org":"demo","sub":"U1"} — the same
+// shape scope_test.src uses; jwt_claim/jwt_org read it without verifying.
+var test_tok = "eyJhbGciOiJub25lIn0.eyJvcmciOiJkZW1vIiwic3ViIjoiVTEifQ.c2ln"
+
+// tq runs one scalar SQLite expression and unwraps the JSON-string result —
+// the same round-trip fp_strip uses. "" on any failure.
+func tq(db, expr, binds) (out) {
+    rows := sqlite_query(db, "SELECT (" + expr + ") AS v", binds)
+    if rows == "" || rows == "[]" { return "" }
+    v, e := json_get(rows, "[0].v")
+    if e != "" { return "" }
+    return fp_unescape(fp_unquote(v))
+}
+
+// fake_read accumulates one HTTP request: headers through CRLFCRLF, then
+// exactly Content-Length body bytes (read() returns arbitrary chunks).
+func fake_read(fd) (req) {
+    buf := ""
+    while index(buf, "\r\n\r\n") < 0 {
+        c := read(fd)
+        if c == "" { return "" }
+        buf = buf + c
+    }
+    he := index(buf, "\r\n\r\n")
+    head := substr(buf, 0, he)
+    lh := to_lower(head)
+    cl := 0
+    p := index(lh, "content-length:")
+    if p >= 0 {
+        i := p + 15
+        while i < len(lh) && substr(lh, i, i + 1) == " " { i = i + 1 }
+        n := 0
+        while i < len(lh) {
+            ch := substr(lh, i, i + 1)
+            if ch < "0" || ch > "9" { break }
+            n = n * 10 + parse_int(ch)
+            i = i + 1
+        }
+        cl = n
+    }
+    body := substr(buf, he + 4, len(buf))
+    while len(body) < cl {
+        c := read(fd)
+        if c == "" { break }
+        body = body + c
+    }
+    return head + "\r\n\r\n" + body
+}
+
+// st is one server's whole state: "n" mints ids, "w" counts mutating
+// requests, "d|<ref>|<id>" holds the stored document WITHOUT its id
+// (reads merge it back, like bkn's withID).
+func fake_list(st, db, ref) (out) {
+    out = "["
+    first := true
+    p := "d|" + ref + "|"
+    ks := keys(st)
+    i := 0
+    while i < len(ks) {
+        k := ks[i]
+        if has_prefix(k, p) {
+            id := substr(k, len(p), len(k))
+            doc := tq(db, "json_set(?, '$.id', ?)", []string{st[k], id})
+            if doc == "" { doc = st[k] }
+            if !first { out = out + "," }
+            first = false
+            out = out + doc
+        }
+        i = i + 1
+    }
+    return out + "]"
+}
+
+func fake_route(st, db, orgstamp, req) (resp) {
+    le := index(req, "\r\n")
+    line := substr(req, 0, le)
+    sp1 := index(line, " ")
+    rest := substr(line, sp1 + 1, len(line))
+    sp2 := index(rest, " ")
+    method := substr(line, 0, sp1)
+    path := substr(rest, 0, sp2)
+    q := index(path, "?")
+    if q >= 0 { path = substr(path, 0, q) }
+    he := index(req, "\r\n\r\n")
+    body := ""
+    if he >= 0 { body = substr(req, he + 4, len(req)) }
+    if path == "/__stats" {
+        out := "{\"w\":" + st["w"] + "}"
+        return "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+            str(len(out)) + "\r\nConnection: close\r\n\r\n" + out
+    }
+    segs := []string{}
+    parts := split(path, "/")
+    i := 0
+    while i < len(parts) {
+        if parts[i] != "" { segs = append(segs, parts[i]) }
+        i = i + 1
+    }
+    status := "404 Not Found"
+    out := "{\"ok\":false,\"error\":{\"message\":\"no such route\",\"type\":\"not_found\"}}"
+    if len(segs) >= 4 && segs[0] == "v1" && segs[1] == "store" {
+        ref := segs[2] + "/" + segs[3]
+        if method == "GET" && len(segs) == 4 {
+            status = "200 OK"
+            out = "{\"ok\":true,\"records\":" + fake_list(st, db, ref) + "}"
+        }
+        if method == "GET" && len(segs) >= 5 {
+            k := "d|" + ref + "|" + segs[4]
+            cur := st[k]
+            if cur == "" {
+                status = "404 Not Found"
+                out = "{\"ok\":false,\"error\":{\"message\":\"record not found\",\"type\":\"not_found\"}}"
+            } else {
+                full := tq(db, "json_set(?, '$.id', ?)", []string{cur, segs[4]})
+                if full == "" { full = cur }
+                status = "200 OK"
+                out = "{\"ok\":true,\"record\":" + full + "}"
+            }
+        }
+        if method == "POST" && len(segs) == 4 {
+            st["w"] = str(parse_int(st["w"]) + 1)
+            id := ""
+            iv, ie := json_get(body, ".id")
+            if ie == "" { id = parse(iv, "") }
+            doc := tq(db, "json_remove(?, '$.id')", []string{body})
+            if doc == "" { doc = body }
+            if id == "" {
+                n := parse_int(st["n"]) + 1
+                st["n"] = str(n)
+                id = "id-" + str(n)
+            }
+            // an org-scoped bkn rewrites its scopeField into every doc on
+            // POST — the asymmetry fingerprinting must ignore
+            if orgstamp != "" {
+                doc = tq(db, "json_set(?, '$.org', ?)", []string{doc, orgstamp})
+            }
+            st["d|" + ref + "|" + id] = doc
+            full := tq(db, "json_set(?, '$.id', ?)", []string{doc, id})
+            if full == "" { full = doc }
+            status = "200 OK"
+            out = "{\"ok\":true,\"record\":" + full + "}"
+        }
+        if method == "PATCH" && len(segs) >= 5 {
+            st["w"] = str(parse_int(st["w"]) + 1)
+            k := "d|" + ref + "|" + segs[4]
+            cur := st[k]
+            if cur == "" {
+                status = "404 Not Found"
+                out = "{\"ok\":false,\"error\":{\"message\":\"record not found\",\"type\":\"not_found\"}}"
+            } else {
+                // bkn's shallow merge: stored keys not in the patch keep
+                // their order, patch keys follow; _mtime untouched unless
+                // the patch names it — exactly the issue's repro write
+                patch := tq(db, "json_remove(?, '$.id')", []string{body})
+                if patch == "" { patch = body }
+                merged := tq(db, "SELECT json_group_object(key, CASE type WHEN 'object' THEN json(value) WHEN 'array' THEN json(value) WHEN 'true' THEN json('true') WHEN 'false' THEN json('false') ELSE value END) AS m FROM (SELECT key, value, type FROM json_each(?) WHERE key NOT IN (SELECT key FROM json_each(?)) UNION ALL SELECT key, value, type FROM json_each(?))",
+                    []string{cur, patch, patch})
+                if merged == "" { merged = cur }
+                st[k] = merged
+                full := tq(db, "json_set(?, '$.id', ?)", []string{merged, segs[4]})
+                if full == "" { full = merged }
+                status = "200 OK"
+                out = "{\"ok\":true,\"record\":" + full + "}"
+            }
+        }
+        if method == "DELETE" && len(segs) >= 5 {
+            st["w"] = str(parse_int(st["w"]) + 1)
+            k := "d|" + ref + "|" + segs[4]
+            if st[k] == "" {
+                status = "404 Not Found"
+                out = "{\"ok\":false,\"error\":{\"message\":\"record not found\",\"type\":\"not_found\"}}"
+            } else {
+                delete(st, k)
+                status = "200 OK"
+                out = "{\"ok\":true,\"deleted\":\"" + segs[4] + "\"}"
+            }
+        }
+    }
+    return "HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nContent-Length: " +
+        str(len(out)) + "\r\nConnection: close\r\n\r\n" + out
+}
+
+// One accept loop per fake server; docs stay in this goroutine's map and
+// its own sqlite handle so the two servers share no state. ready <- 1
+// once listen() has bound (0 on failure so main fails instead of hanging).
+func fake_bkn(port, orgstamp, ready) {
+    srv := listen(port)
+    if srv <= 0 { ready <- 0  return }
+    db := sqlite_open(":memory:")
+    st := make(map[string]string)
+    st["n"] = "0"
+    st["w"] = "0"
+    ready <- 1
+    while true {
+        c := accept(srv)
+        if c <= 0 { continue }
+        socket_timeout(c, 10000)
+        req := fake_read(c)
+        if req != "" { write(c, fake_route(st, db, orgstamp, req)) }
+        close(c)
+    }
+}
+
+// --- assertion helpers --------------------------------------------------------
+
+// fake_get returns the raw .record JSON token for one doc ("" on miss) —
+// the same raw-token form fetch_records feeds sync, so fingerprints here
+// compare exactly what the merge sees.
+func fake_get(base, id) {
+    stt, body, err := http_request("GET",
+        base + "/v1/store/m365/tasks/" + id, []string{}, "")
+    if err != "" || stt != 200 { return "" }
+    v, e := json_get(body, ".record")
+    if e != "" { return "" }
+    return v
+}
+
+func fake_field(base, id, field) {
+    v, e := json_get(fake_get(base, id), field)
+    if e != "" { return "" }
+    return parse(v, "")
+}
+
+// fake_raw is fake_field without unquoting — for non-string values like
+// booleans, where parse(v, "") would read them as "".
+func fake_raw(base, id, field) {
+    v, e := json_get(fake_get(base, id), field)
+    if e != "" { return "" }
+    return trim(v)
+}
+
+func fake_patch(base, id, patch) {
+    _, _, _ = http_request("PATCH", base + "/v1/store/m365/tasks/" + id,
+        []string{"Content-Type: application/json"}, patch)
+}
+
+func fake_post(base, doc) {
+    _, _, _ = http_request("POST", base + "/v1/store/m365/tasks",
+        []string{"Content-Type: application/json"}, doc)
+}
+
+// mutating-request count the fake server saw — proof a pass stayed quiet.
+func fake_writes(base) {
+    stt, body, err := http_request("GET", base + "/__stats", []string{}, "")
+    if err != "" || stt != 200 { return "" }
+    v, e := json_get(body, ".w")
+    if e != "" { return "" }
+    return trim(v)
+}
+
+func main() {
+    // --- fingerprint unit coverage -------------------------------------
+    sync_remote_tok = test_tok
+
+    // _mtime value AND member position are ignored
+    assert_eq_str(rec_fingerprint("{\"title\":\"t\",\"_mtime\":100,\"done\":false}"),
+        rec_fingerprint("{\"title\":\"t\",\"done\":false,\"_mtime\":200}"),
+        "fingerprint ignores _mtime value and position")
+
+    // the tenancy stamp (value == caller's org claim) is not content …
+    assert_eq_str(rec_fingerprint("{\"title\":\"t\",\"org\":\"demo\",\"_mtime\":5}"),
+        rec_fingerprint("{\"title\":\"t\",\"_mtime\":5}"),
+        "fingerprint ignores the org stamp")
+    // … but a different value under the same field name IS content
+    assert(rec_fingerprint("{\"title\":\"t\",\"org\":\"demo\",\"_mtime\":5}") !=
+        rec_fingerprint("{\"title\":\"t\",\"org\":\"other\",\"_mtime\":5}"),
+        "fingerprint keeps a foreign org value")
+
+    // genuine content differences are seen
+    assert(rec_fingerprint("{\"a\":1}") != rec_fingerprint("{\"a\":2}"),
+        "fingerprint sees content changes")
+    // only the TOP-LEVEL _mtime is sync-owned — a nested one is content
+    assert(rec_fingerprint("{\"m\":{\"_mtime\":1},\"x\":1}") !=
+        rec_fingerprint("{\"m\":{\"_mtime\":2},\"x\":1}"),
+        "fingerprint keeps nested _mtime as content")
+
+    // tie_winner: identical bytes and fingerprint-equal docs are `same`
+    assert_eq_int(tie_winner("{\"a\":1}", "{\"a\":1}"), 0, "identical docs are same")
+    assert_eq_int(tie_winner("{\"a\":1,\"_mtime\":5}", "{\"a\":1,\"_mtime\":9}"),
+        0, "mtime-only difference is same")
+    // on a real difference the HIGHER fingerprint wins, antisymmetrically
+    la := "{\"title\":\"aaa\",\"_mtime\":5}"
+    lb := "{\"title\":\"bbb\",\"_mtime\":5}"
+    lf := rec_fingerprint(la)
+    rf := rec_fingerprint(lb)
+    want := 1
+    if lf < rf { want = 2 }
+    assert_eq_int(tie_winner(la, lb), want, "tie_winner follows fingerprint order")
+    assert_eq_int(tie_winner(lb, la), 3 - want, "tie_winner is antisymmetric")
+
+    // --- end-to-end against the fake bkn pair ----------------------------
+    ready := make(chan int)
+    go fake_bkn(18991, "", ready)
+    go fake_bkn(18992, "demo", ready)
+    r1 := <-ready
+    r2 := <-ready
+    assert(r1 == 1 && r2 == 1, "both fake bkn servers listening")
+
+    sync_local = "http://127.0.0.1:18991"
+    sync_local_tok = "t"
+    sync_remote = "http://127.0.0.1:18992"
+    sync_remote_tok = test_tok
+    refs := []string{"m365/tasks"}
+
+    // seed: plain app write — no _mtime (the suite convention apps follow)
+    stt, body, err := http_request("POST", sync_local + "/v1/store/m365/tasks",
+        []string{"Content-Type: application/json"}, "{\"title\":\"task A\",\"done\":false}")
+    assert(err == "" && stt == 200, "seed write reaches fake local")
+    id := ""
+    iv, ie := json_get(body, ".record.id")
+    if ie == "" { id = parse(iv, "") }
+    assert(id != "", "seed write minted an id")
+
+    // converge: push stamps _mtime remotely, pull brings it (+ the org
+    // stamp) back locally; a clean pass then writes nothing on either side
+    sync_pass_once(refs)
+    sync_pass_once(refs)
+    sync_pass_once(refs)
+    lw0 := fake_writes(sync_local)
+    rw0 := fake_writes(sync_remote)
+    sync_pass_once(refs)
+    assert_eq_str(fake_writes(sync_local), lw0, "converged pass: local stays quiet")
+    assert_eq_str(fake_writes(sync_remote), rw0, "converged pass: remote stays quiet")
+
+    // issue repro: bkn-native PATCH edits content WITHOUT touching _mtime —
+    // on BOTH sides, so lm == rm with genuinely different docs
+    fake_patch(sync_local, id, "{\"title\":\"task A EDITED-LOCAL\"}")
+    fake_patch(sync_remote, id, "{\"title\":\"task A EDITED-REMOTE\"}")
+
+    // predict the deterministic winner from the same fingerprints sync uses
+    lpre := fake_get(sync_local, id)
+    rpre := fake_get(sync_remote, id)
+    assert(lpre != "" && rpre != "", "both sides serve the tied record")
+    lf2 := rec_fingerprint(lpre)
+    rf2 := rec_fingerprint(rpre)
+    wantTitle := "task A EDITED-REMOTE"
+    if lf2 > rf2 { wantTitle = "task A EDITED-LOCAL" }
+
+    // before the fix this pass counted the record `same` and the two
+    // replicas diverged silently forever
+    sync_pass_once(refs)
+    assert_eq_str(fake_field(sync_local, id, ".title"), wantTitle,
+        "tie resolves to the fingerprint winner on local")
+    assert_eq_str(fake_field(sync_remote, id, ".title"), wantTitle,
+        "tie resolves to the fingerprint winner on remote")
+    assert_eq_str(fake_raw(sync_local, id, ".done"), "false",
+        "unpatched fields survive the resolution")
+
+    // converged again — the next pass must not flap or rewrite
+    lw1 := fake_writes(sync_local)
+    rw1 := fake_writes(sync_remote)
+    sync_pass_once(refs)
+    assert_eq_str(fake_writes(sync_local), lw1, "post-tie pass: local stays quiet")
+    assert_eq_str(fake_writes(sync_remote), rw1, "post-tie pass: remote stays quiet")
+    assert_eq_str(fake_field(sync_local, id, ".title"), wantTitle,
+        "winner stable after follow-up sync")
+    assert_eq_str(fake_field(sync_remote, id, ".title"), wantTitle,
+        "no divergence reappears")
+
+    test_summary()
+}

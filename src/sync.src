@@ -2,8 +2,9 @@
 // local bkn and a remote bkn. Records are treated as opaque JSON: we only
 // read .id and ._mtime and re-POST the raw object (POST upserts by id).
 //
-// Conflict policy: last-writer-wins on the _mtime field (ms). Sync stamps
-// _mtime on any doc it writes that lacks one.
+// Conflict policy: last-writer-wins on the _mtime field (ms), with a
+// content-fingerprint tie-break when mtimes are equal (fp.src). Sync
+// stamps _mtime on any doc it writes that lacks one.
 //
 // Deletes DO propagate via tombstones (see tombs.src for the marker
 // format and migration): a deleter POSTs a marker to sync/tombstones,
@@ -294,7 +295,17 @@ func sync_one_ref(ref, tm) {
                 } else if rm > lm {
                     if push_doc(sync_local, sync_local_tok, ref, rrec, "local") { pulled = pulled + 1 }
                 } else {
-                    same = same + 1
+                    // lm == rm: _mtime is only a writer-managed hint —
+                    // writers that never refresh it (raw PATCH/POST)
+                    // would diverge silently as `same` forever. Compare
+                    // content; the higher fingerprint wins so every
+                    // syncing client resolves the tie identically.
+                    w := tie_winner(lrec, rrec)
+                    if w == 0 { same = same + 1 } else if w == 1 {
+                        if push_doc(sync_remote, sync_remote_tok, ref, lrec, "remote") { pushed = pushed + 1 }
+                    } else {
+                        if push_doc(sync_local, sync_local_tok, ref, rrec, "local") { pulled = pulled + 1 }
+                    }
                 }
             }
         }

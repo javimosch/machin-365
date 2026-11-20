@@ -26,6 +26,10 @@ jobs:
       - name: Build suite binary
         run: ./build.sh
 
+      - name: Regression tests
+        run: |
+          machin test $(ls src/*.src | grep -v 'src/main.src') test/tie_test.src
+
       - name: Smoke test
         run: |
           ./build/machin-365 catalog >/dev/null && echo "catalog ok"
