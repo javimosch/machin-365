@@ -5,6 +5,14 @@
 // collections overwrite each other and resurrect. Legacy tombstones
 // written with a bare ".id" are still honoured, and each sync pass
 // rewrites them to the compound id.
+//
+// Markers are retained for tomb_gc_ttl_ms() so deletes keep reaching
+// peers that were offline when the marker was written; past that window
+// gc_tombs() collects a marker once its target record is confirmed
+// absent on both sides of a clean pass (see gc_tombs for the exact
+// rules). A peer offline longer than the window that still holds the
+// record can resurrect it — the same failure mode as #84/#85, bounded
+// rather than eliminated.
 
 // collection holding delete markers. New-style docs carry the compound
 // "ref|id" as .id so same-id deletes in different collections cannot
@@ -46,25 +54,42 @@ func tomb_wins(tm, ref, id, mt) {
 // invalid markers are left alone. When a compound doc for the same target
 // already exists with a newer-or-equal _mtime the legacy doc is redundant
 // and is just dropped — rewriting it would needlessly downgrade the mt.
+// Markers past the retention window are not rewritten — they are recorded
+// as gc_tombs candidates instead (an expired marker that survives the
+// absence check stays legacy one more pass, which is harmless).
 func canon_tombs(base, tok, side) {
     recs := fetch_records(base, tok, sync_tomb_coll, side)
+    cutoff := now_ms() - tomb_gc_ttl_ms()
     i := 0
     while i < len(recs) {
         r := recs[i]
         ref := jstr(r, ".ref")
         id := jstr(r, ".id")
         mt := rec_mtime(r)
-        if ref != "" && id != "" && mt > 0 && !has_prefix(id, ref + "|") {
-            nid := ref + "|" + id
-            dup := find_rec(recs, nid)
-            dmt := 0
-            if dup != "" { dmt = rec_mtime(dup) }
-            if dmt >= mt {
-                api_delete(base, tok, "/v1/store/" + sync_tomb_coll + "/" + id, side)
-            } else if push_doc(base, tok, sync_tomb_coll,
-                "{\"ref\":" + json(ref) + ",\"id\":" + json(nid) +
-                ",\"_mtime\":" + str(mt) + "}", side) {
-                api_delete(base, tok, "/v1/store/" + sync_tomb_coll + "/" + id, side)
+        if ref != "" && id != "" && mt > 0 {
+            if mt < cutoff {
+                tid := id
+                if has_prefix(id, ref + "|") {
+                    tid = substr(id, len(ref) + 1, len(id))
+                }
+                tomb_gc_cands = append(tomb_gc_cands, TombGcCand{
+                    side: side,
+                    path: "/v1/store/" + sync_tomb_coll + "/" + id,
+                    ref: ref,
+                    tid: tid,
+                })
+            } else if !has_prefix(id, ref + "|") {
+                nid := ref + "|" + id
+                dup := find_rec(recs, nid)
+                dmt := 0
+                if dup != "" { dmt = rec_mtime(dup) }
+                if dmt >= mt {
+                    api_delete(base, tok, "/v1/store/" + sync_tomb_coll + "/" + id, side)
+                } else if push_doc(base, tok, sync_tomb_coll,
+                    "{\"ref\":" + json(ref) + ",\"id\":" + json(nid) +
+                    ",\"_mtime\":" + str(mt) + "}", side) {
+                    api_delete(base, tok, "/v1/store/" + sync_tomb_coll + "/" + id, side)
+                }
             }
         }
         i = i + 1
