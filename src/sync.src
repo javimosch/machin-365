@@ -122,13 +122,19 @@ func local_alive() {
 // fetch every record of a collection as raw JSON objects, paginated.
 // sync_fetch_ok ends true only when every page arrived — callers that
 // persist or diff the result (the sync manifest) must check it.
+// sync/tombstones is fetched with a server-side _mtime floor so markers
+// past the retention window never leave the store (tombs.src): the merge
+// then only ever sees live markers, and expired rows stop costing
+// transfer on every pass. load_tombs applies the same cutoff client-side
+// for stores that ignore the filter.
 func fetch_records(base, tok, ref, side) (recs) {
     recs = []string{}
     sync_fetch_ok = true
     off := 0
     while true {
-        st, body, err := api_get(base, tok, "/v1/store/" + ref +
-            "?limit=500&offset=" + str(off))
+        q := "?limit=500&offset=" + str(off)
+        if ref == sync_tomb_coll { q = q + "&_mtime=gt:" + str(tomb_cutoff()) }
+        st, body, err := api_get(base, tok, "/v1/store/" + ref + q)
         if err != "" || st != 200 {
             if side == "remote" && is_private_admin_err(st, body) && remote_provision(ref) { continue }
             sync_note_err(side, "GET /v1/store/" + ref, st, err, body)
