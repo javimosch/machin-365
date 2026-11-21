@@ -12,6 +12,7 @@ func config_path() { return suite_home() + "/config.json" }
 func catalog_path() { return suite_home() + "/catalog.json" }
 func installed_path() { return suite_home() + "/installed.json" }
 func manifest_path() { return suite_home() + "/sync-manifest.txt" }
+func remote_manifest_path() { return suite_home() + "/sync-manifest-remote.txt" }
 func apps_dir() { return suite_home() + "/apps" }
 func data_root() { return suite_home() + "/data" }
 
