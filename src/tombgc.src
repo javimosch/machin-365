@@ -1,0 +1,146 @@
+// tombgc.src — retention collection for sync/tombstones delete markers.
+// Split from tombs.src (which owns the marker format, manifests and
+// canonicalisation) to keep both files under the suite's source-size
+// convention.
+//
+// Markers are retained for tomb_gc_ttl_ms() so deletes keep reaching
+// peers that were offline when the marker was written; past that window
+// gc_tombs() collects a marker once its target record is confirmed
+// absent on both sides of a clean pass. A peer offline longer than the
+// window that still holds the record can resurrect it — the same
+// failure mode as #84/#85, bounded rather than eliminated.
+
+// One expired marker spotted by canon_tombs on one side, awaiting the
+// end-of-pass gc_tombs decision. path is the store DELETE path for the
+// marker doc; ref/tid identify the deleted record (collection + id)
+// the marker guards.
+type TombGcCand struct {
+    side string
+    path string
+    ref string
+    tid string
+}
+
+// Expired-marker candidates for the pass in progress, appended by
+// canon_tombs (which already fetches both sides' marker collections —
+// collection costs no extra requests) and consumed by gc_tombs at the
+// end of sync_pass_once. Reset per pass by tomb_gc_begin.
+var tomb_gc_cands = []TombGcCand{}
+
+// Post-merge survivor id sets per synced ref, recorded by surv_note
+// during the pass loop: ref -> man_encode'd local/remote post-merge id
+// blob. surv_ok marks refs that were synced at all — markers for
+// collections outside the sync set are always kept, since their records
+// cannot be proven absent. Reset per pass by tomb_gc_begin.
+var surv_l = make(map[string]string)
+var surv_r = make(map[string]string)
+var surv_ok = make(map[string]int)
+
+// Retention window for delete markers, in ms. Markers older than this
+// are GC candidates; they are only collected once the target record is
+// confirmed absent on both sides of a clean pass. Default 90 days —
+// long enough that a device offline for a normal absence still meets
+// its deletes on return. A peer offline longer than the window that
+// still holds the record can resurrect it (the #84/#85 failure mode);
+// that bounded window is the documented trade-off for keeping the
+// collection from growing without limit. MACHIN_365_TOMBSTONE_TTL_DAYS
+// overrides the window in days (positive, capped at 100 years).
+func tomb_gc_ttl_ms() {
+    d := env("MACHIN_365_TOMBSTONE_TTL_DAYS")
+    if d != "" {
+        v := parse_int(d)
+        if v > 0 && v <= 36500 { return v * 24 * 3600 * 1000 }
+    }
+    return 90 * 24 * 3600 * 1000
+}
+
+// Per-pass GC reset: candidates and survivor sets belong to one pass.
+func tomb_gc_begin() {
+    tomb_gc_cands = []TombGcCand{}
+    surv_l = make(map[string]string)
+    surv_r = make(map[string]string)
+    surv_ok = make(map[string]int)
+}
+
+// Record one ref's post-merge survivor ids for the GC absence check.
+// ids are the sync_post_*/sync_rpost_* sets sync_one_ref leaves behind;
+// the tombstone collection itself is skipped (its records ARE markers,
+// never GC targets).
+func surv_note(ref, side, ids) {
+    if ref == sync_tomb_coll { return }
+    surv_ok[ref] = 1
+    if side == "local" {
+        surv_l[ref] = man_encode(ids)
+    } else {
+        surv_r[ref] = man_encode(ids)
+    }
+}
+
+// End-of-pass entry point. Collection only runs on a fully clean pass:
+// a partial fetch or a failed delete must never feed marker collection.
+func tomb_gc_finish() {
+    if sync_err_count != 0 { return }
+    n := gc_tombs()
+    if n > 0 {
+        pout("sync/tombstones: collected " + str(n) + " expired marker(s)")
+    }
+}
+
+// Delete expired delete markers. A candidate is deleted only when ALL
+// of these hold:
+//
+//   - an expired candidate for the same "ref|id" marker exists on BOTH
+//     sides. A marker still propagating on one side keeps its twin
+//     alive, so collection cannot outrun replication — the lagging side
+//     re-pushes the marker on its next pass and both copies are
+//     collected together one pass later.
+//   - the marker's ref was synced this pass (surv_ok) — markers for
+//     collections outside the sync set are kept, since their records
+//     cannot be proven absent.
+//   - the target record is absent from BOTH post-merge survivor sets
+//     (surv_l local, surv_r remote). tomb_gc_finish only calls this on
+//     a zero-error pass, so "absent from the merged sets" means absent
+//     on both ends — a tomb-dead record deleted this pass counts as
+//     absent, which is correct: the marker already did its job.
+//
+// Markers are write-once by convention, so a same-id marker rewritten
+// between the canon fetch and this delete is indistinguishable — the
+// exposure is one pass and the failure mode is a missed propagation,
+// not corruption.
+//
+// surv_l/surv_r hold man_encode'd id blobs; membership is tested as
+// contains(blob, json(id) + "\n") since every encoded id line ends in
+// "\n".
+func gc_tombs() (removed) {
+    removed = 0
+    lok := make(map[string]int)
+    rok := make(map[string]int)
+    i := 0
+    while i < len(tomb_gc_cands) {
+        c := tomb_gc_cands[i]
+        k := c.ref + "|" + c.tid
+        // first pass records which side(s) hold an expired candidate;
+        // a key qualifies only when seen on both
+        if c.side == "local" { lok[k] = 1 } else { rok[k] = 1 }
+        i = i + 1
+    }
+    i = 0
+    while i < len(tomb_gc_cands) {
+        c := tomb_gc_cands[i]
+        k := c.ref + "|" + c.tid
+        if lok[k] == 1 && rok[k] == 1 && surv_ok[c.ref] == 1 {
+            present := contains(surv_l[c.ref], json(c.tid) + "\n") ||
+                contains(surv_r[c.ref], json(c.tid) + "\n")
+            if !present {
+                base := sync_local
+                tok := sync_local_tok
+                if c.side == "remote" { base = sync_remote  tok = sync_remote_tok }
+                if api_delete(base, tok, c.path, c.side) {
+                    removed = removed + 1
+                }
+            }
+        }
+        i = i + 1
+    }
+    return removed
+}

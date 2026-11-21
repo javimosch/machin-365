@@ -13,7 +13,9 @@
 // (edit-after-delete) wins and the record survives. Deletes made through
 // the store API carry no tombstone, so sync keeps last-seen id manifests
 // on BOTH sides (tombs.src) and writes the missing markers itself — see
-// tomb_missing_ids (local) and remote_missing_ids (remote).
+// tomb_missing_ids (local) and remote_missing_ids (remote). Markers are
+// retained for a window then collected once their target is confirmed
+// absent on both sides (tombgc.src).
 //
 // Endpoints: config.json server/token = remote; local_port/local_token =
 // the service instance. Env overrides win for testing:
@@ -325,50 +327,6 @@ func sync_one_ref(ref, tm, man, rman) {
     }
 }
 
-// the actionable hint prints once per process, not once per failed pass.
-func sync_auth_warn(msg) {
-    if sync_refresh_warned { return }
-    sync_refresh_warned = true
-    eprintln("machin-365: " + msg)
-}
-
-// One shot at remote credential recovery. Env-managed tokens
-// (MACHIN_365_REMOTE_TOKEN) are the caller's problem — auth login cannot
-// override them, so they are refused here rather than silently ignored.
-// Returns the new access token on success; fatal=true means retrying later
-// cannot help until the next auth login.
-func sync_try_refresh() (ntok, ok, fatal) {
-    ntok = ""
-    ok = false
-    fatal = false
-    if env("MACHIN_365_REMOTE_TOKEN") != "" {
-        sync_auth_warn("remote rejected MACHIN_365_REMOTE_TOKEN — set a valid" +
-            " token or unset the env var (auth login cannot override it)")
-        fatal = true
-        return
-    }
-    ntok, ok, fatal = auth_refresh_stored(sync_remote)
-    return
-}
-
-// Refresh ahead of expiry so --watch does not eat a failed pass every token
-// TTL. Only config-managed JWTs are proactively refreshed; anything else
-// falls through to the reactive path in sync_pass.
-func sync_maybe_refresh() {
-    if sync_refresh_dead { return }
-    if env("MACHIN_365_REMOTE_TOKEN") != "" { return }
-    exp := jwt_exp(sync_remote_tok)
-    if exp == 0 || exp - now_ms() / 1000 > 60 { return }
-    ntok, ok, fatal := sync_try_refresh()
-    if ok {
-        sync_remote_tok = ntok
-        perr("machin-365: access token refreshed before expiry")
-    } else {
-        if fatal { sync_refresh_dead = true }
-        sync_auth_warn("access token expired and refresh failed — run: machin-365 auth login")
-    }
-}
-
 // one full replication pass: tombstones merge first so delete decisions
 // use converged state, then every configured collection.
 func sync_pass_once(refs) {
@@ -385,6 +343,7 @@ func sync_pass_once(refs) {
         return
     }
     sync_local_dead = false
+    tomb_gc_begin()
     canon_tombs(sync_local, sync_local_tok, "local")
     canon_tombs(sync_remote, sync_remote_tok, "remote")
     man, ckey := manifest_begin()
@@ -400,10 +359,13 @@ func sync_pass_once(refs) {
         if ref != sync_tomb_coll { sync_one_ref(ref, tm, man, rman) }
         manifest_note(ref, man, man_new, sync_post_ok, sync_post_ids)
         manifest_note(ref, rman, rman_new, sync_rpost_ok, sync_rpost_ids)
+        surv_note(ref, "local", sync_post_ids)
+        surv_note(ref, "remote", sync_rpost_ids)
         i = i + 1
     }
     save_manifest(man_new, ckey, refs)
     save_remote_manifest(rman_new, rkey, refs)
+    tomb_gc_finish()
     if sync_err_count > 0 {
         perr("sync incomplete: " + str(sync_err_count) + " call(s) failed this pass:")
         j := 0
@@ -411,34 +373,6 @@ func sync_pass_once(refs) {
             perr("  " + sync_err_msgs[j])
             j = j + 1
         }
-    }
-}
-
-// One pass plus credential recovery: when remote calls fail in an
-// auth-class way, rotate the stored session via /v1/auth/refresh and retry
-// the pass ONCE with the new token. A fresh token that is still refused
-// (org-less login, revoked session) marks refresh dead for the process —
-// sync keeps reporting the failures, but stops rotating tokens every pass.
-func sync_pass(refs) {
-    sync_maybe_refresh()
-    sync_pass_once(refs)
-    if !sync_remote_auth_err || sync_refresh_dead { return }
-    ntok, ok, fatal := sync_try_refresh()
-    if !ok {
-        if fatal { sync_refresh_dead = true }
-        if env("MACHIN_365_REMOTE_TOKEN") == "" {
-            sync_auth_warn("remote rejected the access token and refresh failed" +
-                " — run: machin-365 auth login")
-        }
-        return
-    }
-    sync_remote_tok = ntok
-    perr("machin-365: access token refreshed — retrying pass")
-    sync_pass_once(refs)
-    if sync_remote_auth_err {
-        sync_refresh_dead = true
-        sync_auth_warn("token refreshed but remote still refuses — check org" +
-            " scope (auth login --org SLUG) or run: auth login")
     }
 }
 
