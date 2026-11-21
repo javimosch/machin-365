@@ -20,6 +20,7 @@ func print_usage() {
     println("  auth member remove <org> <user> remove a member from an org")
     println("  auth memberships               org memberships of the signed-in account")
     println("  auth orgs                      org slugs the account belongs to")
+    println("  auth org create <slug> [--name N]   create an org (creator becomes owner)")
     println("  auth switch-org <slug>         re-scope the session to another org")
     println("  auth status                   show server/account/token state")
     println("  auth logout                   clear stored tokens")

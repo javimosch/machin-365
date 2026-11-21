@@ -7,13 +7,15 @@
 //   auth member remove <org> <user>
 //   auth memberships            — the signed-in account's org memberships
 //   auth orgs                   — org slugs the account belongs to
+//   auth org create <slug> [--name N]  — create an org, creator becomes owner
 //   auth switch-org <slug>      — re-scope the stored session, no password
 //
 // member/memberships/orgs run on the config'd server with the stored
 // access token; a 401 rotates the session once and retries (auth_api) —
-// the same recovery sync performs. switch-org trades the stored
-// refresh_token for an org-scoped pair via POST /v1/auth/switch-org;
-// rotation is unconditional server-side, so BOTH tokens must persist.
+// the same recovery sync performs. switch-org and org create trade the
+// stored refresh_token for an org-scoped pair via POST
+// /v1/auth/switch-org; rotation is unconditional server-side, so BOTH
+// tokens must persist.
 //
 // GET /v1/auth/orgs (every org on the server) is admin-token-only on bkn
 // and the suite stores no admin token, so `auth orgs` reports the caller's
@@ -144,6 +146,111 @@ func cmd_auth_orgs(a) (code) {
     while i < len(ms) {
         println(ms[i].org_slug)
         i = i + 1
+    }
+    return code
+}
+
+func cmd_auth_org(a) (code) {
+    code = 0
+    if len(a) < 4 {
+        eprintln("usage: machin-365 auth org <create> ...")
+        return 2
+    }
+    act := a[3]
+    if act == "create" { return cmd_auth_org_create(a) }
+    usage_fail("unknown org action '" + act + "'",
+        "usage: machin-365 auth org create <slug> [--name N]")
+    return 2
+}
+
+// `org create <slug> [--name N]` — POST /v1/auth/orgs, the same call
+// signup makes; the creator becomes owner. This is the recovery path for
+// an account whose signup org-create failed: the account exists but
+// belongs to zero orgs, and `member add` needs an existing org admin — so
+// the orphaned user creates their own org here instead. When the stored
+// session has no org scope (exactly that orphan case) it is re-scoped to
+// the new org via switch-org; a session already scoped to an org stays
+// put — moving workspaces is switch-org's job, not a side effect of
+// creating one.
+func cmd_auth_org_create(a) (code) {
+    code = 0
+    usage := "usage: machin-365 auth org create <slug> [--name N]"
+    if len(a) < 5 {
+        eprintln(usage)
+        return 2
+    }
+    slug := a[4]
+    if has_prefix(slug, "--") {
+        usage_fail("unexpected argument '" + slug + "'", usage)
+        return 2
+    }
+    name := ""
+    i := 5
+    while i < len(a) {
+        arg := a[i]
+        if !has_prefix(arg, "--") {
+            usage_fail("unexpected argument '" + arg + "'", usage)
+            return 2
+        }
+        fname, val, has_eq := flag_eq(arg)
+        if fname != "--name" {
+            usage_fail("unknown flag '" + arg + "'", usage)
+            return 2
+        }
+        v, last, ok := flag_value(a, i, val, has_eq)
+        if !ok {
+            usage_fail(fname + " requires a value", usage)
+            return 2
+        }
+        name = v
+        i = last + 1
+    }
+    msg := auth_need_login()
+    if msg != "" {
+        eprintln("machin-365: " + msg)
+        return 1
+    }
+    if name == "" { name = slug }
+    body := "{\"slug\":" + json(slug) + ",\"name\":" + json(name) + "}"
+    st, resp, err := auth_api("POST", "/v1/auth/orgs", body)
+    if err != "" {
+        eprintln("machin-365: org create failed: " + err)
+        return 1
+    }
+    if st != 200 && st != 201 {
+        eprintln("machin-365: org create failed: " + auth_errnote(st, resp))
+        return 1
+    }
+    c := load_config()
+    if c.org == "" && c.refresh_token != "" {
+        lr, _, _, smsg := auth_switch_org_call(strip_slash(c.server), c.refresh_token, slug)
+        if smsg == "" {
+            // Same rule as switch-org: org is the store's tenancy key, so
+            // re-scoping "" → slug parks the org-less store and activates
+            // the new org's own namespace before the config is saved.
+            swmsg := bkn_store_switch(c.server, c.email, c.org, c.server, c.email, slug)
+            if swmsg != "" { eprintln("machin-365: " + swmsg) }
+            auth_warn_account_change(c, c.server, c.email, slug)
+            c.token = lr.tokens.access_token
+            c.refresh_token = lr.tokens.refresh_token
+            c.org = slug
+            if save_config(c) != 0 {
+                eprintln("machin-365: org created and session switched on server but " +
+                    config_path() + " is not writable — not persisted")
+                return 1
+            }
+            println("org " + slug + " created — session scoped as owner")
+            return code
+        }
+        eprintln("machin-365: org created but session rescope failed: " + smsg)
+        eprintln("machin-365: run: auth switch-org " + slug)
+        return code
+    }
+    println("org " + slug + " created — you are owner")
+    if c.org != "" {
+        println("session stays on " + c.org + " — run: auth switch-org " + slug + " to use the new org")
+    } else {
+        println("run: auth login --org " + slug + " to scope the session")
     }
     return code
 }
@@ -298,6 +405,29 @@ func cmd_member_remove(a) (code) {
     return code
 }
 
+// POST /v1/auth/switch-org {refresh_token, org} → rotated tokens scoped to
+// org. Shared by `auth switch-org` and `auth org create` (which lands an
+// org-less session in the workspace it just made). st/resp carry the raw
+// reply so callers can tell "no such route" (old server) from a slug or
+// membership error; msg "" on success, otherwise the transport error or
+// auth_errnote() detail.
+func auth_switch_org_call(server, refresh, slug) (lr, st, resp, msg) {
+    lr = LoginResp{}
+    st = 0
+    resp = ""
+    msg = ""
+    body := "{\"refresh_token\":" + json(refresh) + ",\"org\":" + json(slug) + "}"
+    st2, resp2, err := http_request("POST", server + "/v1/auth/switch-org",
+        []string{"Content-Type: application/json"}, body)
+    st = st2
+    resp = resp2
+    if err != "" { msg = err  return }
+    if st != 200 { msg = auth_errnote(st, resp)  return }
+    lr = parse(resp, LoginResp{})
+    if lr.tokens.access_token == "" { msg = "switch-org response missing access_token" }
+    return
+}
+
 // `switch-org <slug>` — POST /v1/auth/switch-org {refresh_token, org}
 // re-scopes the session without the password. Needs the stored
 // refresh_token; the rotated pair replaces BOTH stored tokens.
@@ -327,16 +457,9 @@ func cmd_auth_switch_org(a) (code) {
         return 1
     }
     server := strip_slash(c.server)
-    jhdr := []string{"Content-Type: application/json"}
-    body := "{\"refresh_token\":" + json(c.refresh_token) + ",\"org\":" + json(slug) + "}"
-    st, resp, err := http_request("POST", server + "/v1/auth/switch-org", jhdr, body)
-    if err != "" {
-        eprintln("machin-365: switch-org failed: " + err)
-        return 1
-    }
-    if st != 200 {
-        note := auth_errnote(st, resp)
-        eprintln("machin-365: switch-org failed: " + note)
+    lr, st, resp, msg := auth_switch_org_call(server, c.refresh_token, slug)
+    if msg != "" {
+        eprintln("machin-365: switch-org failed: " + msg)
         if st == 404 {
             // Two different 404s share this route: "no such route" means
             // the server predates switch-org; anything else (e.g.
@@ -347,14 +470,9 @@ func cmd_auth_switch_org(a) (code) {
                 eprintln("machin-365: check the slug — 'auth orgs' lists orgs you belong to")
             }
         }
-        if contains(note, "not a member") {
+        if contains(msg, "not a member") {
             eprintln("machin-365: ask an org admin to add you: auth member add " + slug + " " + c.email)
         }
-        return 1
-    }
-    lr := parse(resp, LoginResp{})
-    if lr.tokens.access_token == "" {
-        eprintln("machin-365: switch-org response missing access_token")
         return 1
     }
     // Org is the tenancy boundary sync enforces — moving the session to a
