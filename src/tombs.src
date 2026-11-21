@@ -112,9 +112,11 @@ func canon_tombs(base, tok, side) {
 // leaves no marker either — without this baseline the local copy reads
 // as "local-only" and is pushed straight back up, silently undoing the
 // delete on every suite home. A remote-vanished baseline id that still
-// has a local copy and survives the current tombstones gets the same
-// marker written locally, so the pre-delete pass removes the local copy
-// and the marker propagates the delete to the other devices.
+// has a local copy and NO live tombstone gets the same marker written
+// locally, so the pre-delete pass removes the local copy and the marker
+// propagates the delete to the other devices. When a live tombstone
+// covers the id the absence is already explained — tomb_wins then keeps
+// an edit-after-delete survivor instead of a fresh marker out-ranking it.
 //
 // File format (one section per synced collection):
 //   machin-365 sync-manifest v1
@@ -313,14 +315,18 @@ func tomb_vanished_sync(ref, lr, rr, tm, man, rman) (ntm) {
 
 // Remote-side mirror of tomb_missing_ids: ids that were in ref's
 // last-seen REMOTE set but are absent from the current remote fetch (rr)
-// while a local copy (lr) survives the current tombstones. The remote
-// copy is already gone, so the comparison runs against the local
-// record's _mtime — an existing-but-older marker (edit-after-delete)
-// still needs a fresh one. Callers must only run this after a COMPLETE
-// remote fetch: the remote listing is org-scoped, so a partial page or
-// a failed fetch would read still-present records as remote deletes.
-// No baseline for ref returns empty — an empty baseline must never
-// tombstone anything.
+// while a local copy (lr) exists and NO live tombstone covers the id.
+// A live tombstone already explains the remote absence — sync itself
+// removed the remote copy when propagating the marker — and tomb_wins
+// picks the survivor: local _mtime older than the marker is pre-delete,
+// newer is edit-after-delete and gets pushed back. Writing a fresh
+// marker (with _mtime = now) over a live tombstone would out-rank that
+// edit and destroy it, so only a tombstone-free absence — a raw
+// store-API DELETE — is flagged. Callers must only run this after a
+// COMPLETE remote fetch: the remote listing is org-scoped, so a partial
+// page or a failed fetch would read still-present records as remote
+// deletes. No baseline for ref returns empty — an empty baseline must
+// never tombstone anything.
 func remote_missing_ids(ref, lr, rr, tm, rman) (ids) {
     ids = []string{}
     blob := rman[ref]
@@ -338,7 +344,7 @@ func remote_missing_ids(ref, lr, rr, tm, rman) (ids) {
         id := old[i]
         if cur[id] == 0 {
             lrec := find_rec(lr, id)
-            if lrec != "" && tm[ref + "|" + id] <= rec_mtime(lrec) {
+            if lrec != "" && tm[ref + "|" + id] == 0 {
                 ids = append(ids, id)
             }
         }
