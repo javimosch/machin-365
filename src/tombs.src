@@ -10,19 +10,23 @@
 // written with a bare ".id" are still honoured, and each sync pass
 // rewrites them to the compound id.
 //
-// Retention: markers older than tomb_retention_ms are expired — sync
-// stops fetching, merging and honouring them, so a pass costs
-// O(deletes inside the window) instead of O(deletes ever). Expired
-// markers are NOT deleted from the store: their doc ids contain the
-// ref's "/" and a DELETE per expired row would cost a call every pass
-// for rows nothing reads. api_delete's query/encoded-path forms can
-// address them (syncapi.src), so a future sweep could reclaim them —
-// it just isn't worth a call per dormant row. The trade-off is a
-// resurrection window: a peer
-// offline longer than the retention window that still holds a deleted
-// record will push it back (same failure family as #84/#85). 30 days is
-// the conservative end of the window the issue suggests; it assumes
-// roughly NTP-synced clocks, since each home computes its own cutoff.
+// Retention has two windows. tomb_retention_ms is the live window:
+// markers older than it are expired — sync stops fetching them in the
+// live range and load_tombs stops honouring them, so a pass costs
+// O(deletes inside the window) instead of O(deletes ever). Past the GC
+// window (tomb_gc_ttl_ms(), see tombgc.src) canon_tombs records a marker
+// as a collection candidate and gc_tombs deletes it at the end of a
+// clean pass — but only when an expired candidate for the same target
+// exists on BOTH sides and the target record is confirmed absent from
+// both post-merge survivor sets, so collection cannot outrun
+// replication or collect a marker whose delete is still needed.
+// api_delete's query/encoded-path forms can address the stored rows
+// (syncapi.src). The trade-off is a resurrection window: a peer offline
+// longer than the live window that still holds the record will push it
+// back (same failure mode as #84/#85), bounded rather than eliminated.
+// 30 days is the conservative end of the window the issue suggests; it
+// assumes roughly NTP-synced clocks, since each home computes its own
+// cutoff.
 
 // collection holding delete markers. New-style docs carry the compound
 // "ref|id" as .id so same-id deletes in different collections cannot
@@ -76,25 +80,44 @@ func tomb_wins(tm, ref, id, mt) {
 // invalid markers are left alone. When a compound doc for the same target
 // already exists with a newer-or-equal _mtime the legacy doc is redundant
 // and is just dropped — rewriting it would needlessly downgrade the mt.
+// Only markers inside the live window are rewritten — expired markers
+// are recorded as gc_tombs candidates instead (an expired marker that
+// survives the absence check stays legacy one more pass, which is
+// harmless). cutoff is tomb_gc_cutoff(): the GC window clamped so it can
+// never reach inside the live retention window.
 func canon_tombs(base, tok, side) {
     recs := fetch_records(base, tok, sync_tomb_coll, side)
+    cutoff := tomb_gc_cutoff()
     i := 0
     while i < len(recs) {
         r := recs[i]
         ref := jstr(r, ".ref")
         id := jstr(r, ".id")
         mt := rec_mtime(r)
-        if ref != "" && id != "" && mt > tomb_cutoff() && !has_prefix(id, ref + "|") {
-            nid := ref + "|" + id
-            dup := find_rec(recs, nid)
-            dmt := 0
-            if dup != "" { dmt = rec_mtime(dup) }
-            if dmt >= mt {
-                api_delete(base, tok, sync_tomb_coll, id, side)
-            } else if push_doc(base, tok, sync_tomb_coll,
-                "{\"ref\":" + json(ref) + ",\"id\":" + json(nid) +
-                ",\"_mtime\":" + str(mt) + "}", side) {
-                api_delete(base, tok, sync_tomb_coll, id, side)
+        if ref != "" && id != "" && mt > 0 {
+            if mt < cutoff {
+                tid := id
+                if has_prefix(id, ref + "|") {
+                    tid = substr(id, len(ref) + 1, len(id))
+                }
+                tomb_gc_cands = append(tomb_gc_cands, TombGcCand{
+                    side: side,
+                    mid: id,
+                    ref: ref,
+                    tid: tid,
+                })
+            } else if mt > tomb_cutoff() && !has_prefix(id, ref + "|") {
+                nid := ref + "|" + id
+                dup := find_rec(recs, nid)
+                dmt := 0
+                if dup != "" { dmt = rec_mtime(dup) }
+                if dmt >= mt {
+                    api_delete(base, tok, sync_tomb_coll, id, side)
+                } else if push_doc(base, tok, sync_tomb_coll,
+                    "{\"ref\":" + json(ref) + ",\"id\":" + json(nid) +
+                    ",\"_mtime\":" + str(mt) + "}", side) {
+                    api_delete(base, tok, sync_tomb_coll, id, side)
+                }
             }
         }
         i = i + 1

@@ -12,14 +12,18 @@
 // page) leaves the contents unknown: absence in the partial view means
 // nothing and the merge must not run on it (#152).
 // sync/tombstones is fetched with server-side _mtime windows so markers
-// past the retention window never leave the store (tombs.src): live ms
-// markers via ?_mtime=gt:<cutoff>, plus a second range
-// ?_mtime=lt:<mtime_ms_floor> for markers written in epoch SECONDS —
-// they sit below the ms cutoff and would otherwise be invisible to both
-// sides (#126). The ranges are disjoint, so no doc can arrive twice;
-// load_tombs/canon_tombs still apply the cutoff client-side after
+// past the retention window never leave the store in the live range
+// (tombs.src): live ms markers via ?_mtime=gt:<tomb_cutoff()>, plus a
+// second range ?_mtime=lt:<tomb_gc_cutoff()> for everything older than
+// the GC window — ms markers collected by tombgc.src once their target
+// is confirmed gone, AND markers written in epoch SECONDS (they sit far
+// below every ms cutoff and would otherwise be invisible to both sides,
+// #126). The two ranges are disjoint — tomb_gc_cutoff() is clamped to
+// never exceed tomb_cutoff() — so no doc can arrive twice;
+// load_tombs/canon_tombs still apply their cutoffs client-side after
 // rec_mtime's seconds→ms scaling, so the wide low range only costs
-// transfer of dormant non-ms markers.
+// transfer of dormant non-ms markers and GC candidates awaiting
+// collection.
 func fetch_records(base, tok, ref, side) (recs) {
     recs = []string{}
     sync_fetch_ok = true
@@ -38,7 +42,7 @@ func fetch_records(base, tok, ref, side) (recs) {
         // (#152), not confirmation.
         proven1 := sync_fetch_ok || len(recs) > 0
         low := fetch_range(base, tok, ref, side,
-            "&_mtime=lt:" + str(mtime_ms_floor))
+            "&_mtime=lt:" + str(tomb_gc_cutoff()))
         if proven1 { sync_fetch_absent = false }
         i := 0
         while i < len(low) {

@@ -40,6 +40,7 @@ func print_usage() {
     println("  MACHIN_365_HOME    suite home (default ~/.local/share/machin-365)")
     println("  MACHIN_365_CATALOG override catalog.json path")
     println("  MACHIN_365_BKN_PORT  local bkn port (default 17630)")
+    println("  MACHIN_365_TOMBSTONE_TTL_DAYS  tombstone retention window (default 90)")
     println("")
     println("apps are offline-first: the local bkn (service *) is the")
     println("default data layer; `sync` replicates it to the remote")
