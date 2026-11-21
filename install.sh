@@ -19,7 +19,11 @@ esac
 platform="$os-$arch"
 
 case "$platform" in
-  linux-amd64|darwin-amd64|darwin-arm64) ;;
+  linux-amd64|linux-arm64) ;;
+  darwin-amd64|darwin-arm64)
+    echo "install.sh: no darwin release assets published yet ('$platform')" >&2
+    exit 1
+    ;;
   *) echo "install.sh: unsupported platform '$platform'" >&2; exit 1 ;;
 esac
 
