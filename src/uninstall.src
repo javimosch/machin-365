@@ -13,6 +13,26 @@ func drop_installed(r, id) {
     return nr
 }
 
+// app_dir_has_content reports whether apps/<id>/ holds anything an
+// install leaves behind — entries under bin/, or anything else in the
+// app dir. A bare empty bin/ skeleton (the litter a failed install probe
+// leaves on older builds) is NOT content: it must not make uninstall
+// claim a never-installed app was removed.
+func app_dir_has_content(id) {
+    ad := app_dir(id)
+    if !is_dir(ad) { return false }
+    names := list_dir(ad)
+    i := 0
+    while i < len(names) {
+        n := names[i]
+        if n != "bin" { return true }
+        bd := ad + "/bin"
+        if is_dir(bd) && len(list_dir(bd)) > 0 { return true }
+        i = i + 1
+    }
+    return false
+}
+
 // desktop_owned lists the .desktop paths in desktop_dir() belonging to THIS
 // suite home for id. desktop_name(id) is ours by construction; any other
 // machin-365-<id>*.desktop counts only when its contents point back at this
@@ -63,9 +83,12 @@ func cmd_uninstall(a) (code) {
     }
     reg := load_registry()
     t, found := find_installed(reg, id)
-    adir := is_dir(app_dir(id))
+    on_disk := app_dir_has_content(id)
     desks := desktop_owned(id)
-    if !found && !adir && len(desks) == 0 {
+    if !found && !on_disk && len(desks) == 0 {
+        // Only an empty apps/<id>/ skeleton remains — probe-failure
+        // litter, not an install. Drop it and say so.
+        drop_app_skeleton(id)
         eprintln("machin-365: '" + id + "' is not installed")
         return 1
     }
@@ -80,9 +103,13 @@ func cmd_uninstall(a) (code) {
     msg := "uninstalled " + id
     if ver != "" { msg = msg + " " + ver }
     println(msg)
-    if adir {
+    if on_disk {
         system("rm -rf '" + app_dir(id) + "'")
         println("  removed " + app_dir(id) + "/")
+    } else {
+        // Registry/desktop said installed but only an empty skeleton is
+        // on disk — remove it too so uninstall leaves nothing behind.
+        drop_app_skeleton(id)
     }
     if found {
         save_registry(drop_installed(reg, id))
