@@ -97,6 +97,10 @@ remote bkn configured via `auth login`.
 
 Replication is one pass per invocation (`--watch N` loops every N seconds),
 last-writer-wins on an app-level `_mtime` field (POST upserts by record id).
+Apps never write `_mtime` themselves — sync stamps it — so before merging,
+sync PATCHes `_mtime = now` onto any local record that lacks a usable one:
+an unstamped write is by definition the freshest thing sync has seen, and
+without the stamp it would lose LWW to epoch 0 and be silently reverted.
 
 Which collections sync is sticky configuration: `--collections a/b,c/d` is
 remembered in `config.json` (`sync_collections`) on first use, and
