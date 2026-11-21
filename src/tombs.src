@@ -5,11 +5,34 @@
 // collections overwrite each other and resurrect. Legacy tombstones
 // written with a bare ".id" are still honoured, and each sync pass
 // rewrites them to the compound id.
+//
+// Retention: markers older than tomb_retention_ms are expired — sync
+// stops fetching, merging and honouring them, so a pass costs
+// O(deletes inside the window) instead of O(deletes ever). Expired
+// markers are NOT deleted from the store: their doc ids contain the
+// ref's "/" and the store API's DELETE route addresses a record by a
+// single path segment, so compound-id docs cannot be removed over HTTP
+// (verified against machin-bkn). They stay on disk as dormant rows;
+// reclaiming them needs a bkn route that accepts multi-segment or
+// query-addressed ids. The trade-off is a resurrection window: a peer
+// offline longer than the retention window that still holds a deleted
+// record will push it back (same failure family as #84/#85). 30 days is
+// the conservative end of the window the issue suggests; it assumes
+// roughly NTP-synced clocks, since each home computes its own cutoff.
 
 // collection holding delete markers. New-style docs carry the compound
 // "ref|id" as .id so same-id deletes in different collections cannot
 // collide; legacy docs carry the bare target id and are still honoured.
 var sync_tomb_coll = "sync/tombstones"
+
+// How long a delete marker stays live for sync. Past this age the marker
+// is invisible to every tombstone read (see header comment).
+var tomb_retention_ms = 2592000000 // 30 days
+
+// oldest _mtime a marker may carry and still be honoured this pass.
+func tomb_cutoff() (cutoff) {
+    return now_ms() - tomb_retention_ms
+}
 
 // tomb map: "ref|id" -> newest tombstone _mtime, from the (just-merged)
 // local sync/tombstones collection.
@@ -22,7 +45,10 @@ func load_tombs() (tm) {
         ref := jstr(r, ".ref")
         id := jstr(r, ".id")
         mt := rec_mtime(r)
-        if ref != "" && id != "" && mt > 0 {
+        // expired markers are dead weight — fetch_records already filters
+        // them server-side, this is the same rule for stores that ignore
+        // the filter or for callers holding unfiltered records
+        if ref != "" && id != "" && mt > tomb_cutoff() {
             k := ref + "|" + id
             // new-style tombstones already use "ref|id" as the doc id —
             // that string IS the match key; legacy bare-id docs need the
@@ -54,7 +80,7 @@ func canon_tombs(base, tok, side) {
         ref := jstr(r, ".ref")
         id := jstr(r, ".id")
         mt := rec_mtime(r)
-        if ref != "" && id != "" && mt > 0 && !has_prefix(id, ref + "|") {
+        if ref != "" && id != "" && mt > tomb_cutoff() && !has_prefix(id, ref + "|") {
             nid := ref + "|" + id
             dup := find_rec(recs, nid)
             dmt := 0
