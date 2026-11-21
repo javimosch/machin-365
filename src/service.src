@@ -102,9 +102,17 @@ func cmd_service_install(a) (code) {
     was_running := bkn_owner() == "ours"
     if was_running { cmd_service_stop() }
     oldpid := trim(read_file(bkn_pidfile()))
+    // Snapshot the endpoint config cmd_service_start may persist: on a
+    // rejected install the suite must be left exactly as it was, and a
+    // "still starting" (rc 3) start keeps the new port/token persisted —
+    // cmd_service_start only unpersists definitive failures itself.
+    pc := load_config()
+    pre_port := pc.local_port
+    pre_tok := pc.local_token
     if cmd_service_start() != 0 {
         service_install_rollback(oldpid)
         restore_bkn_bin(oldb, had_old)
+        service_start_unpersist(pre_port, pre_tok)
         foreign := bkn_owner() == "foreign"
         tail := ""
         if !foreign { tail = service_log_tail() }
@@ -191,6 +199,15 @@ func bkn_health_pid() {
     return trim(v)
 }
 
+// pid_alive reports whether pid still exists — kill -0 checks existence
+// and permission without delivering a signal. It is what separates a
+// crashed spawn (fail fast, the log has the reason) from a slow one
+// (keep waiting: first boots pay schema init and a loaded disk stretches
+// them well past a few seconds).
+func pid_alive(pid) {
+    return system("kill -0 " + pid + " 2>/dev/null") == 0
+}
+
 // true when the listener accepts tok as an admin bearer on an authed
 // store route. Proves the bkn on our port holds THIS home's token.
 func bkn_accepts(tok) {
@@ -260,6 +277,9 @@ func local_admin_token() {
 // straight back to it. tok is the loopback admin token; callers ensure
 // it exists first. The already-running/foreign-port short-circuits live
 // here so both callers share them.
+// Returns 0 healthy, 1 failed (foreign port, spawn error, pid exited),
+// 3 spawned-and-alive but unbound at the deadline — a slow boot, not a
+// proven failure; callers decide whether that is acceptable.
 func service_spawn(tok) (code) {
     code = 0
     own := bkn_owner()
@@ -284,10 +304,17 @@ func service_spawn(tok) (code) {
     }
     pid := trim(out)
     write_file(bkn_pidfile(), pid + "\n")
-    // wait until the port serves THIS home's bkn — a foreign bkn that
-    // answers /_health must not satisfy the wait (or the claim).
+    // Wait until the port serves THIS home's bkn — a foreign bkn that
+    // answers /_health must not satisfy the wait (or the claim). The
+    // window is deliberately generous (~20s of loopback polls): a fresh
+    // per-account store pays cold schema init and a loaded disk stretches
+    // first boots well past the old ~3s, which used to reject valid
+    // binaries and print false failures while the bkn came up anyway.
+    // A pid dead for ~1s is a real crash — fail fast instead of waiting
+    // out the window.
     i := 0
-    while i < 30 {
+    dead := 0
+    while i < 200 {
         own = bkn_owner()
         if own == "ours" {
             hpid := bkn_health_pid()
@@ -296,16 +323,41 @@ func service_spawn(tok) (code) {
             return code
         }
         if own == "foreign" { break }
+        if pid_alive(pid) {
+            dead = 0
+        } else {
+            dead = dead + 1
+            if dead >= 10 { break }
+        }
         sleep(100)
         i = i + 1
     }
     own = bkn_owner()
+    if own == "ours" {
+        hpid := bkn_health_pid()
+        if hpid != "" && hpid != pid { write_file(bkn_pidfile(), hpid + "\n") }
+        println("bkn running at " + local_url() + " (pid " + hpid + ")")
+        return code
+    }
     if own == "foreign" {
         eprintln("machin-365: port " + str(bkn_port()) + " is held by a different bkn — " +
             "set MACHIN_365_BKN_PORT or stop the other instance")
-    } else {
-        eprintln("machin-365: bkn did not come up — see " + bkn_log())
+        return 1
     }
+    if pid_alive(pid) {
+        // Alive at the deadline: a slow boot, not a proven failure — the
+        // process may bind any second. Report the pid so the user can
+        // watch it come up instead of claiming it never will.
+        eprintln("machin-365: bkn (pid " + pid + ") still starting — see " + bkn_log())
+        tail := service_log_tail()
+        if tail != "" { eprintln("  " + tail) }
+        return 3
+    }
+    // The pid exited — startup genuinely failed; the log says why, or is
+    // empty because the binary died before printing anything.
+    eprintln("machin-365: bkn exited during startup — see " + bkn_log())
+    tail := service_log_tail()
+    if tail != "" { eprintln("  " + tail) }
     return 1
 }
 
@@ -342,7 +394,15 @@ func cmd_service_start() (code) {
     // is a no-op when they already match.
     swmsg := bkn_store_switch(c.server, c.email, c.org, c.server, c.email, c.org)
     if swmsg != "" { eprintln("machin-365: " + swmsg) }
-    if service_spawn(c.local_token) != 0 {
+    rc := service_spawn(c.local_token)
+    if rc == 3 {
+        // The spawned bkn is alive but had not bound within the window —
+        // a slow boot, not a failure. Keep the persisted endpoint: the
+        // process is real and should serve shortly, and unpersisting
+        // would leave a coming-up bkn undiscoverable.
+        return 3
+    }
+    if rc != 0 {
         service_start_unpersist(old_port, old_tok)
         return 1
     }
