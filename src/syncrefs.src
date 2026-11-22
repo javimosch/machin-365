@@ -24,19 +24,46 @@ func parse_coll_list(s) (refs) {
     return refs
 }
 
+// A remote probe that does not return 200 (older bkn, non-bkn server,
+// missing route) used to be indistinguishable from "remote has no
+// collections" — remote-only collections then silently never sync.
+// Warn once per invocation; the pass still runs on whatever the probes
+// did return, since local-discovered collections sync correctly.
+func warn_remote_discovery(st, err) {
+    if err != "" {
+        perr("machin-365: remote collection discovery failed: " + err +
+            " — remote-only collections will not sync;" +
+            " set them via sync --collections or config set sync_collections")
+        return
+    }
+    perr("machin-365: remote does not support collection discovery" +
+        " (GET /v1/collections -> HTTP " + str(st) + ")" +
+        " — remote-only collections will not sync;" +
+        " set them via sync --collections or config set sync_collections")
+}
+
 func discover_refs(coll_arg) (refs) {
     refs = []string{}
     if coll_arg != "" { return parse_coll_list(coll_arg) }
     c := load_config()
     if c.sync_collections != "" { return parse_coll_list(c.sync_collections) }
     // probe both sides, union what each exposes
+    remote_ok := false
+    remote_st := 0
+    remote_err := ""
     i := 0
     while i < 2 {
         base := sync_remote
         tok := sync_remote_tok
         if i == 1 { base = sync_local  tok = sync_local_tok }
         st, body, err := api_get(base, tok, "/v1/collections")
-        if err == "" && st == 200 {
+        ok := err == "" && st == 200
+        if i == 0 {
+            remote_ok = ok
+            remote_st = st
+            remote_err = err
+        }
+        if ok {
             j := 0
             while true {
                 r, e := json_get(body, ".collections[" + str(j) + "].ref")
@@ -48,5 +75,6 @@ func discover_refs(coll_arg) (refs) {
         }
         i = i + 1
     }
+    if !remote_ok { warn_remote_discovery(remote_st, remote_err) }
     return refs
 }
