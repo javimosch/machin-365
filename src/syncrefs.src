@@ -1,8 +1,21 @@
 // syncrefs.src — which collections a sync pass covers.
 //
 // collection discovery: --collections arg > config.sync_collections >
-// GET /v1/collections (Go bkn only — machin-bkn has no HTTP list route).
+// GET /v1/collections on both sides (older bkn builds lack the route —
+// discovery then warns and falls back to local refs).
 // coll_arg is the already-parsed --collections/--coll value ("" = flag absent).
+//
+// The remote list answers every collection the token can READ — on a
+// shared multi-tenant server that includes other tenants' admin-private
+// collections. Unioning them replicated foreign rows into the local store
+// and then failed every pass: pulled docs get a local _mtime stamp, LWW
+// reads them as newer, and the write-back POST/DELETE is refused 403
+// forever (#107). Auto-discovery therefore keeps a remote ref only when
+// the token can write it (remote_writable); refs named explicitly via
+// --collections/sync_collections bypass the filter — naming a ref is the
+// user's override. Local refs are always kept: the suite manages that
+// store, and a collection that exists only locally self-provisions on the
+// remote on first write.
 
 // comma-separated list → refs ("a/b, c/d" tolerates spaces)
 func parse_coll_list(s) (refs) {
@@ -42,15 +55,61 @@ func warn_remote_discovery(st, err) {
         " set them via sync --collections or config set sync_collections")
 }
 
+// Write-capability probe for one remote ref: PUT /v1/store/<ref> with an
+// empty body maps to the "create" verb, so a collection that refuses
+// create is denied by the access check before the route runs — no
+// mutation — while an allowed PUT on an already-declared collection
+// changes nothing (no .access/.normalize in the body means the policy is
+// never rewritten). When the reply echoes the collection's access policy,
+// the verbs sync needs (create for POST upserts, delete for tombstones)
+// must name a non-admin audience — an undeclared verb is admin-only by
+// contract. Servers that do not echo the policy fall through on the 2xx:
+// the create-verb gate already ran to produce it.
+func remote_writable(ref) {
+    st, resp, err := api_put(sync_remote, sync_remote_tok, "/v1/store/" + ref, "{}")
+    if err != "" || st < 200 || st >= 300 { return false }
+    acc, e := json_get(resp, ".collection.access")
+    if e != "" || acc == "" { return true }
+    verbs := []string{"create", "delete"}
+    i := 0
+    while i < len(verbs) {
+        a, ve := json_get(resp, ".collection.access.rules." + verbs[i])
+        if ve != "" { return false }
+        if parse(a, "") == "admin" { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// Remote refs the probe refused: readable but not this token's to
+// replicate. One capped line per invocation — the skipped set can be long
+// on a busy shared server.
+func warn_skipped_remote(skipped) {
+    msg := "machin-365: sync: skipped " + str(len(skipped)) +
+        " remote collection(s) — readable but not writable by this token" +
+        " (not replicated):"
+    i := 0
+    while i < len(skipped) && i < 5 {
+        msg = msg + " " + skipped[i] + ","
+        i = i + 1
+    }
+    if len(skipped) > 5 { msg = msg + " ..." }
+    msg = msg + " — sync one anyway with: sync --collections <ref>"
+    perr(msg)
+}
+
 func discover_refs(coll_arg) (refs) {
     refs = []string{}
     if coll_arg != "" { return parse_coll_list(coll_arg) }
     c := load_config()
     if c.sync_collections != "" { return parse_coll_list(c.sync_collections) }
-    // probe both sides, union what each exposes
+    // probe both sides into separate lists: remote refs join only when
+    // writable; local refs always join
     remote_ok := false
     remote_st := 0
     remote_err := ""
+    rrefs := []string{}
+    lrefs := []string{}
     i := 0
     while i < 2 {
         base := sync_remote
@@ -69,12 +128,36 @@ func discover_refs(coll_arg) (refs) {
                 r, e := json_get(body, ".collections[" + str(j) + "].ref")
                 if e != "" { break }
                 ref := parse(r, "")
-                if !has_ref(refs, ref) { refs = append(refs, ref) }
+                if ref == "" { j = j + 1  continue }
+                if i == 0 {
+                    if !has_ref(rrefs, ref) { rrefs = append(rrefs, ref) }
+                } else {
+                    if !has_ref(lrefs, ref) { lrefs = append(lrefs, ref) }
+                }
                 j = j + 1
             }
         }
         i = i + 1
     }
     if !remote_ok { warn_remote_discovery(remote_st, remote_err) }
+    skipped := []string{}
+    i = 0
+    while i < len(rrefs) {
+        ref := rrefs[i]
+        if remote_writable(ref) {
+            if !has_ref(refs, ref) { refs = append(refs, ref) }
+        } else {
+            skipped = append(skipped, ref)
+        }
+        i = i + 1
+    }
+    i = 0
+    while i < len(lrefs) {
+        if !has_ref(rrefs, lrefs[i]) && !has_ref(refs, lrefs[i]) {
+            refs = append(refs, lrefs[i])
+        }
+        i = i + 1
+    }
+    if len(skipped) > 0 { warn_skipped_remote(skipped) }
     return refs
 }

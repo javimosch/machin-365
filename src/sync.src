@@ -162,7 +162,15 @@ func find_rec(recs, id) {
 }
 
 func push_doc(base, tok, ref, rec, side) {
-    doc := stamp(rec)
+    // _mtime marks a LOCAL-originated write for LWW. Docs pulled from the
+    // remote are stored verbatim: stamping them now() would fake a local
+    // edit newer than the remote copy, so every later pass would push the
+    // record straight back — a permanent 403 on collections the token can
+    // read but not write (#107). side is the write TARGET: "remote" pushes
+    // local-originated docs (stamp them), "local" pulls remote docs
+    // (keep the remote _mtime state, present or absent).
+    doc := rec
+    if side == "remote" { doc = stamp(rec) }
     st, resp, err := api_post(base, tok, "/v1/store/" + ref, doc)
     ok := (st == 200 || st == 201) && err == ""
     if !ok && side == "remote" && is_private_admin_err(st, resp) && remote_provision(ref) {

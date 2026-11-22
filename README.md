@@ -102,7 +102,10 @@ Which collections sync is sticky configuration: `--collections a/b,c/d` is
 remembered in `config.json` (`sync_collections`) on first use, and
 `config set sync_collections a/b,c/d` sets it explicitly — either way bare
 `sync` / `sync --watch` keep working without retyping the list. With no
-configured set, sync probes `GET /v1/collections` on both sides.
+configured set, sync probes `GET /v1/collections` on both sides — remote
+refs join the sync set only when the token can write them, so other
+tenants' read-only collections on a shared server are never replicated
+(name one explicitly via `--collections`/`sync_collections` to override).
 
 **Deletes propagate via tombstones**: before deleting a synced doc, the app
 POSTs `{"ref":"ns/coll","id":"ns/coll|<id>","_mtime":T}` to the
