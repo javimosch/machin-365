@@ -5,6 +5,12 @@
 // coll_arg is the already-parsed --collections/--coll value ("" = flag absent).
 // parse_coll_list lives in colls.src with the ref validators.
 
+// Set when empty discovery is explained by an org-less session on an
+// account that HAS orgs: cmd_sync exits non-zero so the pass cannot
+// report a healthy "nothing to sync" while every org-scoped collection
+// is invisible to the token (#119).
+var sync_orgless_block = false
+
 // A remote probe that does not return 200 (older bkn, non-bkn server,
 // missing route) used to be indistinguishable from "remote has no
 // collections" — remote-only collections then silently never sync.
@@ -84,6 +90,35 @@ func coll_probe(base, tok) (refs, st, err, ok, dropped) {
         j = j + 1
     }
     return
+}
+
+// An org-less token is refused by every org-scoped collection, so
+// /v1/collections answers 200 with an empty set — indistinguishable
+// from "remote has no collections" (#119). When the account actually
+// belongs to orgs, those orgs' collections are exactly what this token
+// cannot see: warn and let cmd_sync fail the pass. Scope is judged on
+// the token actually in use (env overrides included): a JWT's org
+// claim when readable, config.org for opaque tokens that carry no
+// claim to inspect. auth_my_orgs then confirms memberships before we
+// cry wolf — a genuinely org-less account, or a dead/foreign token,
+// has nothing to warn about.
+func warn_orgless_session() {
+    tok := sync_remote_tok
+    p1 := index(tok, ".")
+    rest := ""
+    if p1 > 0 { rest = substr(tok, p1 + 1, len(tok)) }
+    jwt_shaped := p1 > 0 && index(rest, ".") > 0
+    if jwt_shaped {
+        if jwt_org(tok) != "" { return }
+    } else if load_config().org != "" {
+        return
+    }
+    orgs, ok := auth_my_orgs(sync_remote, tok)
+    if !ok || len(orgs) == 0 { return }
+    sync_orgless_block = true
+    perr("machin-365: session has no org scope — org-scoped collections" +
+        " are invisible to this token;" +
+        " run: auth login --org SLUG (or: auth switch-org SLUG)")
 }
 
 func discover_refs(coll_arg) (refs) {
