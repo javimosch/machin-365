@@ -475,9 +475,13 @@ func cmd_sync(a) (code) {
         return 2
     }
     if len(refs) == 0 {
+        // An org-less session on an org-ful account discovers zero refs
+        // forever — that is a broken login, not an idle sync (#119).
+        warn_orgless_session()
         println("nothing to sync — no collections found")
         println("hint: machin-365 sync --collections ns/coll,ns/coll2  (remembered)")
         println("      or: machin-365 config set sync_collections ns/coll,ns/coll2")
+        if sync_orgless_block { return 1 }
         return code
     }
 
