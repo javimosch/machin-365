@@ -109,7 +109,8 @@ func sync_parse_args(a) (watch, coll_arg, have_coll, err_msg) {
         bad := first_bad_ref(parse_coll_list(coll_arg))
         if bad != "" {
             err_msg = "invalid collection ref '" + bad +
-                "' — expected ns/coll (e.g. --collections ns/coll,ns/coll2)"
+                "' — expected ns/coll with [a-z0-9_-] segments" +
+                " (e.g. --collections ns/coll,ns/coll2)"
         }
     }
     return

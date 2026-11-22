@@ -2,7 +2,11 @@
 // Both writers of the sticky sync_collections set — the --collections
 // flag and `config set sync_collections` — parse through here, and sync
 // re-validates whatever discover_refs returns, so a malformed ref is
-// rejected before it can be memorised or used for a pass (#48).
+// rejected before it can be memorised or used for a pass (#48). Shape
+// alone is not enough: refs must satisfy the bkn's segment rule, because
+// a shape-valid ref like "m365/tasks?x=1" is interpolated raw into store
+// URLs where '?' becomes query syntax — the pass then syncs a phantom
+// filtered view and, once persisted, the blackout is sticky (#125).
 
 // comma-separated list → refs ("a/b, c/d" tolerates spaces)
 func parse_coll_list(s) (refs) {
@@ -24,23 +28,44 @@ func parse_coll_list(s) (refs) {
     return refs
 }
 
-// a collection ref is exactly "ns/coll" — one '/', non-empty on both
-// sides. Anything else can only ever 404, and because --collections is
-// persisted verbatim a typo would silently replace the whole sticky list,
-// so malformed refs are rejected before any pass or config write.
-func valid_ref(ref) {
-    s := index(ref, "/")
-    if s <= 0 { return false }
-    rest := substr(ref, s + 1, len(ref))
-    if rest == "" || index(rest, "/") >= 0 { return false }
+// bkn ref shape, mirroring the server's own rule (store splitRef /
+// validSegment): <ns>/<coll> where each segment starts with a lowercase
+// letter and continues with [a-z0-9_-], at most 63 chars. One validator
+// for every ref source — user flags, sticky config, and remote discovery
+// probes (untrusted HTTP output, #109). A ref outside the segment
+// charset can never name a real collection, and characters like '?'
+// would otherwise reach the store URL as query syntax instead of
+// failing loudly (#125).
+func seg_ok(seg) {
+    if len(seg) == 0 || len(seg) > 63 { return false }
+    f := substr(seg, 0, 1)
+    if f < "a" || f > "z" { return false }
+    i := 0
+    while i < len(seg) {
+        c := substr(seg, i, i + 1)
+        good := false
+        if c >= "a" && c <= "z" { good = true }
+        if c >= "0" && c <= "9" { good = true }
+        if c == "-" || c == "_" { good = true }
+        if !good { return false }
+        i = i + 1
+    }
     return true
 }
 
-// first entry that is not ns/coll-shaped, "" when all are valid.
+func ref_ok(ref) {
+    at := index(ref, "/")
+    if at <= 0 { return false }
+    rest := substr(ref, at + 1, len(ref))
+    if index(rest, "/") >= 0 { return false }
+    return seg_ok(substr(ref, 0, at)) && seg_ok(rest)
+}
+
+// first entry that fails ref_ok, "" when all are valid.
 func first_bad_ref(refs) {
     i := 0
     while i < len(refs) {
-        if !valid_ref(refs[i]) { return refs[i] }
+        if !ref_ok(refs[i]) { return refs[i] }
         i = i + 1
     }
     return ""

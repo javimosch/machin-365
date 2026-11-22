@@ -3,7 +3,7 @@
 // collection discovery: --collections arg > config.sync_collections >
 // GET /v1/collections (Go bkn only — machin-bkn has no HTTP list route).
 // coll_arg is the already-parsed --collections/--coll value ("" = flag absent).
-// parse_coll_list lives in colls.src with the ref validators.
+// parse_coll_list and the ref validators (ref_ok/seg_ok) live in colls.src.
 
 // Set when empty discovery is explained by an org-less session on an
 // account that HAS orgs: cmd_sync exits non-zero so the pass cannot
@@ -29,43 +29,12 @@ func warn_remote_discovery(st, err) {
         " set them via sync --collections or config set sync_collections")
 }
 
-// bkn ref shape, mirroring the server's own rule (store splitRef /
-// validSegment): <ns>/<coll> where each segment starts with a lowercase
-// letter and continues with [a-z0-9_-], at most 63 chars. Probe output is
-// untrusted — it arrives over HTTP from a remote we do not control — so a
-// discovered "ref" that cannot name a real collection is dropped before it
-// can be synced, provisioned on the remote, or persisted to config.json
-// (#109: intermittent phantom refs reached all three).
-func seg_ok(seg) {
-    if len(seg) == 0 || len(seg) > 63 { return false }
-    f := substr(seg, 0, 1)
-    if f < "a" || f > "z" { return false }
-    i := 0
-    while i < len(seg) {
-        c := substr(seg, i, i + 1)
-        good := false
-        if c >= "a" && c <= "z" { good = true }
-        if c >= "0" && c <= "9" { good = true }
-        if c == "-" || c == "_" { good = true }
-        if !good { return false }
-        i = i + 1
-    }
-    return true
-}
-
-func ref_ok(ref) {
-    at := index(ref, "/")
-    if at <= 0 { return false }
-    rest := substr(ref, at + 1, len(ref))
-    if index(rest, "/") >= 0 { return false }
-    return seg_ok(substr(ref, 0, at)) && seg_ok(rest)
-}
-
-// One side's /v1/collections answer, parsed into validated refs: each
-// ".collections[i].ref" that passes the bkn segment rule (ref_ok), deduped.
-// dropped counts the malformed ones for the caller's diagnostic. ok is
-// true only on a clean 200 — a failed probe yields an empty list the
-// caller must not read as "this side has no collections".
+// coll_probe parses one side's /v1/collections answer into validated refs:
+// each ".collections[i].ref" that passes ref_ok (colls.src — the bkn
+// segment rule), deduped. dropped counts the malformed ones for the
+// caller's diagnostic. ok is true only on a clean 200 — a failed probe
+// yields an empty list the caller must not read as "this side has no
+// collections".
 func coll_probe(base, tok) (refs, st, err, ok, dropped) {
     refs = []string{}
     st = 0
