@@ -38,7 +38,7 @@ func tomb_cutoff() (cutoff) {
 // local sync/tombstones collection.
 func load_tombs() (tm) {
     tm = make(map[string]int)
-    recs := fetch_records(sync_local, sync_local_tok, sync_tomb_coll, "local")
+    recs := fetch_records(sync_local, sync_local_tok, sync_tomb_coll, "local", false)
     i := 0
     while i < len(recs) {
         r := recs[i]
@@ -73,7 +73,11 @@ func tomb_wins(tm, ref, id, mt) {
 // already exists with a newer-or-equal _mtime the legacy doc is redundant
 // and is just dropped — rewriting it would needlessly downgrade the mt.
 func canon_tombs(base, tok, side) {
-    recs := fetch_records(base, tok, sync_tomb_coll, side)
+    // prov stays true: the remote tombstone collection must be declared
+    // on the first pass even with zero markers, or every marker-less
+    // user's sync would fail on it forever (sync_one_ref gates its own
+    // read-path provisioning on local_pending).
+    recs := fetch_records(base, tok, sync_tomb_coll, side, true)
     i := 0
     while i < len(recs) {
         r := recs[i]

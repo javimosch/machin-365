@@ -67,7 +67,12 @@ var sync_rpost_mts = make(map[string]int)
 // then only ever sees live markers, and expired rows stop costing
 // transfer on every pass. load_tombs applies the same cutoff client-side
 // for stores that ignore the filter.
-func fetch_records(base, tok, ref, side) (recs) {
+// prov gates the remote read-path self-declaration (provision.src): a
+// private-admin refusal only earns a declaration PUT when the caller
+// knows data is waiting to move — otherwise a well-formed typo'd ref
+// would leave a phantom collection on the server. The write path
+// (push_doc) still declares on the first actual POST.
+func fetch_records(base, tok, ref, side, prov) (recs) {
     recs = []string{}
     sync_fetch_ok = true
     off := 0
@@ -76,7 +81,16 @@ func fetch_records(base, tok, ref, side) (recs) {
         if ref == sync_tomb_coll { q = q + "&_mtime=gt:" + str(tomb_cutoff()) }
         st, body, err := api_get(base, tok, "/v1/store/" + ref + q)
         if err != "" || st != 200 {
-            if side == "remote" && is_private_admin_err(st, body) && remote_provision(ref) { continue }
+            if side == "remote" && is_private_admin_err(st, body) {
+                if prov {
+                    if remote_provision(ref) { continue }
+                } else if ref != sync_tomb_coll {
+                    perr("machin-365: sync: " + ref + " is not declared" +
+                        " on the remote and has nothing local waiting to" +
+                        " sync — not declaring it (check for a typo in" +
+                        " --collections or sync_collections)")
+                }
+            }
             sync_note_err(side, "GET /v1/store/" + ref, st, err, body)
             sync_fetch_ok = false
             break
@@ -159,6 +173,22 @@ func push_doc(base, tok, ref, rec, side) {
     return ok
 }
 
+// true when the local fetch holds at least one record this pass would
+// push upstream — the only situation where declaring a remote collection
+// the token cannot yet see can move data. A record already dead to a
+// tombstone pushes nothing, so an all-dead local side does not justify
+// the declaration either. False negatives are harmless: push_doc still
+// declares on the first actual POST.
+func local_pending(ref, lr, tm) {
+    i := 0
+    while i < len(lr) {
+        r := lr[i]
+        if !tomb_wins(tm, ref, rec_id(r), rec_mtime(r)) { return true }
+        i = i + 1
+    }
+    return false
+}
+
 // merge one collection both ways. tm maps "ref|id" -> tombstone _mtime;
 // records older than their tombstone are DELETE'd on their side and then
 // treated as absent, so they cannot resurrect. An empty tm disables
@@ -173,9 +203,14 @@ func sync_one_ref(ref, tm, man, rman) {
     same := 0
     deleted := 0
     e0 := sync_err_count
-    lr := fetch_records(sync_local, sync_local_tok, ref, "local")
+    lr := fetch_records(sync_local, sync_local_tok, ref, "local", false)
     lok := sync_fetch_ok
-    rr := fetch_records(sync_remote, sync_remote_tok, ref, "remote")
+    // Read-path provisioning is only worthwhile when the local side has
+    // a record to push: an empty↔empty ref (a typo'd --collections entry,
+    // say) has nothing to move in either direction, so declaring the
+    // remote collection would be a pure side-effect (#101).
+    prov := local_pending(ref, lr, tm)
+    rr := fetch_records(sync_remote, sync_remote_tok, ref, "remote", prov)
     rok := sync_fetch_ok
 
     // Only COMPLETE fetches may feed delete detection — a partial page
