@@ -578,8 +578,8 @@ func cmd_service_reset(a) (code) {
     // The sync manifests are the delete-propagation baselines: left in
     // place, the next pass would read the wiped store as "every synced
     // record was deleted" and tombstone the remote copy of all of it.
-    remove(manifest_path())
-    remove(remote_manifest_path())
+    // Baselines are per identity — every one must go (manifests.src).
+    remove_all_manifests()
     if removed == 0 {
         println("local bkn store is already empty — nothing to reset")
     } else {

@@ -38,6 +38,16 @@
 // removed) from an unexplained one (copy NEWER than the marker, which
 // tomb_wins would not have deleted). v1 lines decode with mtime 0 =
 // unknown, keeping the pre-v2 tombstone-covered excuse.
+//
+// Baselines are per identity: sync-manifest.<key>.txt and
+// sync-remote-manifest.<key>.txt, one file per manifest key, so an
+// account/org switch parks the previous identity's baseline instead of
+// discarding it — switching back restores vanished-id detection and a
+// remote delete that landed while another identity was active is still
+// flagged instead of silently resurrecting (#118). The pre-per-key
+// single-slot files (sync-manifest.txt / sync-remote-manifest.txt) are
+// migrated on first read: their content is parked under the account key
+// their own "account" line names, then the slot is removed.
 
 // Identity the baseline is bound to: the account key plus the local
 // endpoint. An account switch swaps the active bkn store
@@ -142,14 +152,12 @@ func man_decode_mt(blob) (ids, mts) {
     return
 }
 
-// Load a manifest file into ref -> blob plus the stored account key (""
-// when the file is absent or has no account line — the caller treats any
-// key other than the current baseline key as no baseline).
-func manifest_read(path) (man, acct) {
+// Parse manifest text into ref -> blob plus the stored account key (""
+// when there is no account line — the caller treats any key other than
+// the current baseline key as no baseline).
+func manifest_parse(s) (man, acct) {
     man = make(map[string]string)
     acct = ""
-    s := read_file(path)
-    if s == "" { return }
     cur := ""
     rest := s
     while rest != "" {
@@ -169,6 +177,12 @@ func manifest_read(path) (man, acct) {
             man[cur] = man[cur] + line + "\n"
         }
     }
+    return
+}
+
+// Load a manifest file into ref -> blob plus the stored account key.
+func manifest_read(path) (man, acct) {
+    man, acct = manifest_parse(read_file(path))
     return
 }
 
@@ -196,41 +210,100 @@ func manifest_write(path, tmp, man, acct, refs, ver) {
 }
 
 func save_manifest(man, acct, refs) {
-    manifest_write(manifest_path(), suite_home() + "/.sync-manifest.tmp",
+    manifest_write(manifest_stem() + acct + ".txt",
+        suite_home() + "/.sync-manifest." + acct + ".tmp",
         man, acct, refs, "v1")
 }
 
 func save_remote_manifest(man, acct, refs) {
-    manifest_write(remote_manifest_path(),
-        suite_home() + "/.sync-remote-manifest.tmp", man, acct, refs, "v2")
+    manifest_write(remote_manifest_stem() + acct + ".txt",
+        suite_home() + "/.sync-remote-manifest." + acct + ".tmp",
+        man, acct, refs, "v2")
 }
 
-// Load this pass's manifest baseline, discarding it when it was written
-// under a different account+endpoint identity — a switched store or a
-// different remote scope must not inherit the old id set.
-func manifest_begin() (man, ckey) {
-    man, acct := manifest_read(manifest_path())
-    ckey = manifest_key()
-    if acct != ckey {
-        if acct != "" {
-            perr("machin-365: sync: local store identity changed —" +
-                " previous sync manifest ignored")
+// Load the baseline for one identity. Baselines live in per-key files
+// (<stem><key>.txt) so an account/org switch parks the previous
+// identity's baseline instead of discarding it — switching back finds
+// vanished-id detection intact, and a remote delete that landed while
+// another identity was active is still flagged instead of being pushed
+// back up (#118). A key with no file has no baseline yet (first sync
+// for that identity) — trusted-empty by design.
+//
+// The pre-per-key single-slot file (legacy_path) is migrated on every
+// read until it is gone: its content is parked under the account key
+// its own "account" line names, then the slot is removed. The slot is
+// only ever written by the old version, so when it names THIS identity
+// it is newer than any per-key file (a downgrade rewrote it) and is
+// adopted outright; for another identity it is parked only when no
+// per-key file exists yet — an existing one is newer, written by this
+// version. A baseline is trusted only when the file's account line
+// matches the key it is stored under — a mismatch is corruption, not a
+// baseline, and is ignored.
+func manifest_load_for(ckey, stem, legacy_path, label) (man) {
+    man = make(map[string]string)
+    lraw := read_file(legacy_path)
+    if lraw != "" {
+        _, lacct := manifest_parse(lraw)
+        if !valid_store_key(lacct) {
+            // no trustworthy identity to park it under — the content
+            // was never a usable baseline anyway; drop the slot
+            remove(legacy_path)
+        } else {
+            lkpath := stem + lacct + ".txt"
+            if lacct == ckey || file_size(lkpath) < 0 {
+                if write_file(lkpath, lraw) < 0 {
+                    perr("machin-365: could not migrate " + legacy_path)
+                } else {
+                    remove(legacy_path)
+                }
+            } else {
+                // already parked under a newer per-key file
+                remove(legacy_path)
+            }
         }
-        man = make(map[string]string)
     }
+    kpath := stem + ckey + ".txt"
+    m, acct := manifest_read(kpath)
+    if acct == ckey { return m }
+    if acct != "" {
+        perr("machin-365: sync: " + label + " manifest account mismatch —" +
+            " ignoring " + kpath)
+    }
+    return man
+}
+
+// Remove every manifest baseline: all per-identity files, the legacy
+// single-slot files and stray tmp files. service reset calls this after
+// wiping the stores — any surviving baseline would read the empty
+// stores as mass deletes and tombstone the remote copies.
+func remove_all_manifests() {
+    prefixes := []string{"sync-manifest.", ".sync-manifest.",
+        "sync-remote-manifest.", ".sync-remote-manifest."}
+    pi := 0
+    while pi < len(prefixes) {
+        names := dir_names_prefixed(suite_home(), prefixes[pi])
+        i := 0
+        while i < len(names) {
+            remove(suite_home() + "/" + names[i])
+            i = i + 1
+        }
+        pi = pi + 1
+    }
+}
+
+// Load this pass's local-side baseline for the current identity.
+func manifest_begin() (man, ckey) {
+    ckey = manifest_key()
+    man = manifest_load_for(ckey, manifest_stem(), manifest_path(),
+        "local store")
     return
 }
 
+// Load this pass's remote-side baseline for the current identity.
 func remote_manifest_begin() (man, ckey) {
-    man, acct := manifest_read(remote_manifest_path())
     ckey = remote_manifest_key()
-    if acct != ckey {
-        if acct != "" {
-            perr("machin-365: sync: remote identity changed —" +
-                " previous remote sync manifest ignored")
-        }
-        man = make(map[string]string)
-    }
+    man = manifest_load_for(ckey, remote_manifest_stem(),
+        remote_manifest_path(), "remote")
     return
 }
 
