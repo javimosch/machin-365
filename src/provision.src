@@ -14,6 +14,56 @@
 // enough (a fresh pass, e.g. after token refresh, may carry an org).
 var sync_provision_tried = []string{}
 
+// Read-path provisioning gate, set by sync_one_ref before each remote
+// fetch (and pinned to 0 around canon_tombs, whose remote fetch is not a
+// sync decision):
+//   0 = local state unknown — the local fetch failed and already reported
+//   1 = local fetch clean but nothing live to push for this ref
+//   2 = local writes are pending — the remote collection is needed
+// Only 2 may self-declare on a remote read refusal: an empty<->empty ref
+// (a typo'd --collections) has nothing to declare, and provisioning it
+// would leave a permanent phantom collection on the server (#101).
+var sync_prov_gate = 0
+
+// Refs already reported absent this process — a persisted typo would
+// otherwise print the warning on every --watch pass.
+var sync_absent_refs = []string{}
+
+// sync_prov_gate_for computes the read-path provisioning gate for one ref
+// from its just-fetched local records: 0 = the local fetch failed (its
+// error is already reported), 1 = clean fetch but nothing live to push,
+// 2 = local writes pending. A record tombstone-dead under tm is deleted
+// locally during the merge instead, so it is not a pending write; and
+// since the remote fetch has not run yet, every live local record would
+// push if it fails — which is exactly when declaring is justified.
+func sync_prov_gate_for(ref, lr, tm, lok) (g) {
+    g = 0
+    if !lok { return }
+    g = 1
+    k := 0
+    while k < len(lr) {
+        if !tomb_wins(tm, ref, rec_id(lr[k]), rec_mtime(lr[k])) {
+            g = 2
+            break
+        }
+        k = k + 1
+    }
+    return
+}
+
+// One-line report for a ref that is refused on the remote read path while
+// the local side has nothing to push. Not a sync error: there is genuinely
+// nothing to move, and the collection is declared lazily on the first
+// actual POST (push_doc). sync/tombstones is exempt — it is infrastructure,
+// not a configured ref, and its absence is the normal fresh-install state.
+func sync_note_absent(ref) {
+    if ref == sync_tomb_coll { return }
+    if has_ref(sync_absent_refs, ref) { return }
+    sync_absent_refs = append(sync_absent_refs, ref)
+    perr("machin-365: sync: " + ref + " absent on the remote and empty" +
+        " locally — nothing to sync (check for typos)")
+}
+
 // true when a failed store call is the undeclared/private-collection refusal
 // an org member can repair by self-declaring (bkn: "this collection is
 // administered privately"). Other 403s — org-scope sign-in refusals,
