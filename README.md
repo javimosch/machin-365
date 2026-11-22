@@ -48,7 +48,8 @@ machin-365 auth status | logout
 machin-365 config                   # paths + account state
 machin-365 config set sync_collections m365/tasks,sync/tombstones
                                   # sticky sync collection list
-machin-365 service install --bin ./bkn   # install local bkn (probes it runs + serves)
+machin-365 service install              # fetch latest mbkn release, install + start local bkn
+machin-365 service install --bin ./bkn  # or a local bkn/mbkn binary
 machin-365 service start|stop|status     # manage local bkn (127.0.0.1:17630)
 machin-365 sync                     # replicate local bkn <-> remote bkn
 machin-365 sync --watch 15          # continuous replication every 15s
@@ -66,7 +67,7 @@ machin-365 auth signup --server https://machin-bkn.vps1.intrane.fr \
     --email you@example.com --password a-good-password
 machin-365 catalog --refresh   # when the server hosts /catalog.json
 machin-365 install tasks
-machin-365 service install --bin ./bkn   # install verifies + starts the local bkn
+machin-365 service install   # downloads latest mbkn release, verifies + starts local bkn
 machin-365 sync --collections m365/tasks   # machin-bkn has no /v1/collections route
 machin-365 run tasks            # add a task, sync, see it on the server
 ```
@@ -94,6 +95,14 @@ session is scoped to it automatically).
 talks to, so apps work fully offline and cannot tell whether a remote server
 exists. `sync` then replicates all store collections between the local and the
 remote bkn configured via `auth login`.
+
+`service install` resolves the bkn binary in order: `--bin /path/to/bkn`,
+then `$MACHIN_BKN_BIN`, then `bkn`/`mbkn` on PATH, then an existing suite
+install — and finally downloads the latest
+[machin-bkn](https://github.com/javimosch/machin-bkn) release asset for your
+platform, verified against the release's published checksum and probed like
+any other install. To use a locally built binary instead, pass `--bin` —
+build it from the machin-bkn repo (needs the `machin` toolchain).
 
 Replication is one pass per invocation (`--watch N` loops every N seconds),
 last-writer-wins on an app-level `_mtime` field (POST upserts by record id).
