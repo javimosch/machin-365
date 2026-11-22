@@ -39,5 +39,6 @@ func print_usage() {
     println("")
     println("apps are offline-first: the local bkn (service *) is the")
     println("default data layer; `sync` replicates it to the remote")
-    println("server configured via `auth login`.")
+    println("server configured via `auth login`. Local data created before")
+    println("the first sign-in is adopted into that account's store.")
 }
