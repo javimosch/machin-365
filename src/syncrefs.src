@@ -86,11 +86,17 @@ func coll_probe(base, tok) (refs, st, err, ok, dropped) {
     return
 }
 
-func discover_refs(coll_arg) (refs) {
+// remote_ok reports whether at least one remote /v1/collections probe
+// answered 200 — the caller needs it to tell "the remote has no
+// collections" apart from "discovery never ran" (--collections /
+// sync_collections short-circuit before probing) and from "the probe
+// failed" (warn_remote_discovery already reported that).
+func discover_refs(coll_arg) (refs, remote_ok) {
     refs = []string{}
-    if coll_arg != "" { return parse_coll_list(coll_arg) }
+    remote_ok = false
+    if coll_arg != "" { return parse_coll_list(coll_arg), false }
     c := load_config()
-    if c.sync_collections != "" { return parse_coll_list(c.sync_collections) }
+    if c.sync_collections != "" { return parse_coll_list(c.sync_collections), false }
     // probe both sides, union what each exposes — twice per side. The
     // discovered set drives the whole pass (sync, remote provisioning, and
     // --collections persistence), and probe output has intermittently
@@ -100,7 +106,6 @@ func discover_refs(coll_arg) (refs) {
     // probe cannot disprove anything, so the side falls back to its first
     // answer — the same trust level as the single probe this replaced. A
     // collection created between the two probes is picked up next pass.
-    remote_ok := false
     remote_st := 0
     remote_err := ""
     dropped := 0
@@ -151,5 +156,38 @@ func discover_refs(coll_arg) (refs) {
             " unconfirmed collection ref(s)")
     }
     if !remote_ok { warn_remote_discovery(remote_st, remote_err) }
-    return refs
+    return refs, remote_ok
+}
+
+// true when the remote session cannot see org-scoped collections. bkn
+// answers /v1/collections 200 with only the refs the token may read, so
+// an org-less session on an org-scoped server discovers zero refs and
+// sync used to print "nothing to sync" and exit 0 forever (#119). A
+// JWT-shaped token's org claim is authoritative (read unsigned, same as
+// jwt_exp/jwt_org — the server stays the verifier); a non-JWT token falls
+// back to the org recorded at login. An env-provided token has no config
+// linkage, so an unreadable claim there is not evidence either way.
+func sync_orgless() {
+    tok := sync_remote_tok
+    p1 := index(tok, ".")
+    if p1 > 0 {
+        rest := substr(tok, p1 + 1, len(tok))
+        if index(rest, ".") > 0 { return jwt_org(tok) == "" }
+    }
+    if env("MACHIN_365_REMOTE_TOKEN") != "" { return false }
+    return load_config().org == ""
+}
+
+// cmd_sync's empty-discovery branch: the remote probe answered but found
+// nothing AND the session has no org scope — org-scoped collections exist
+// but are invisible to this token, so "nothing to sync" would be a lie.
+// Name the cause and let the caller exit non-zero (#119). Returns true
+// only when the warning applied.
+func orgless_discovery_warn() {
+    if !sync_orgless() { return false }
+    eprintln("machin-365: session has no org scope — org-scoped" +
+        " collections are invisible to this token")
+    eprintln("hint: machin-365 auth switch-org SLUG" +
+        "  (or: auth login --org SLUG)")
+    return true
 }

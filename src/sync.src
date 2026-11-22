@@ -456,7 +456,7 @@ func cmd_sync(a) (code) {
         return 1
     }
 
-    refs := discover_refs(coll_arg)
+    refs, remote_ok := discover_refs(coll_arg)
     if have_coll && len(refs) == 0 {
         eprintln("machin-365: --collections named no collections")
         return 2
@@ -475,6 +475,10 @@ func cmd_sync(a) (code) {
         return 2
     }
     if len(refs) == 0 {
+        // remote_ok + zero refs on an org-less session: the remote's
+        // collections are invisible to this token — fail loudly instead
+        // of reporting "nothing to sync" forever (#119).
+        if remote_ok && orgless_discovery_warn() { return 1 }
         println("nothing to sync — no collections found")
         println("hint: machin-365 sync --collections ns/coll,ns/coll2  (remembered)")
         println("      or: machin-365 config set sync_collections ns/coll,ns/coll2")
