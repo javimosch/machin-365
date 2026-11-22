@@ -12,7 +12,7 @@
 // than its tombstone is deleted on both sides; a newer _mtime
 // (edit-after-delete) wins and the record survives. Deletes made through
 // the store API carry no tombstone, so sync keeps last-seen id manifests
-// on BOTH sides (tombs.src) and writes the missing markers itself — see
+// on BOTH sides (manifests.src) and writes the missing markers itself — see
 // tomb_missing_ids (local) and remote_missing_ids (remote).
 //
 // Endpoints: config.json server/token = remote; local_port/local_token =
@@ -54,70 +54,10 @@ var sync_post_ids = []string{}
 var sync_rpost_ok = false
 var sync_rpost_ids = []string{}
 
-// "HTTP 403 <server message>" style detail; transport errors pass through.
-func http_errnote(st, err, resp) {
-    if err != "" { return err }
-    m, e := json_get(resp, ".error.message")
-    if e == "" {
-        mm := parse(m, "")
-        if mm != "" { return "HTTP " + str(st) + " " + mm }
-    }
-    return "HTTP " + str(st)
-}
-
-func sync_note_err(side, what, st, err, resp) {
-    sync_err_count = sync_err_count + 1
-    if side == "remote" && auth_class_err(st, resp) { sync_remote_auth_err = true }
-    msg := side + " " + what + " failed: " + http_errnote(st, err, resp)
-    i := 0
-    while i < len(sync_err_msgs) {
-        if sync_err_msgs[i] == msg { return }
-        i = i + 1
-    }
-    if len(sync_err_msgs) < 12 { sync_err_msgs = append(sync_err_msgs, msg) }
-}
-
-func sync_setup() {
-    c := load_config()
-    sync_remote = env("MACHIN_365_REMOTE")
-    if sync_remote == "" { sync_remote = c.server }
-    sync_remote_tok = env("MACHIN_365_REMOTE_TOKEN")
-    if sync_remote_tok == "" { sync_remote_tok = c.token }
-    sync_local = env("MACHIN_365_LOCAL")
-    if sync_local == "" { sync_local = local_url() }
-    sync_local_tok = env("MACHIN_365_LOCAL_TOKEN")
-    if sync_local_tok == "" { sync_local_tok = c.local_token }
-}
-
-func api_get(base, tok, path) {
-    st, body, err := http_request("GET", base + path,
-        []string{"Authorization: Bearer " + tok}, "")
-    return st, body, err
-}
-
-func api_post(base, tok, path, body) {
-    st, resp, err := http_request("POST", base + path,
-        []string{"Authorization: Bearer " + tok, "Content-Type: application/json"}, body)
-    return st, resp, err
-}
-
-func api_delete(base, tok, path, side) {
-    st, resp, err := http_request("DELETE", base + path,
-        []string{"Authorization: Bearer " + tok}, "")
-    ok := (st == 200 || st == 204) && err == ""
-    if !ok { sync_note_err(side, "DELETE " + path, st, err, resp) }
-    return ok
-}
-
-// One transport-level probe of the local endpoint per pass. A connect
-// failure means nothing is listening — say so once instead of reporting a
-// wall of per-call "connect" errors. Any HTTP status counts as alive:
-// auth and store errors are still reported per call, where they belong.
-func local_alive() {
-    _, _, err := api_get(sync_local, sync_local_tok,
-        "/v1/store/" + sync_tomb_coll + "?limit=1")
-    return err == ""
-}
+// sync_rpost_mts maps each sync_rpost_ids entry to the remote-side
+// _mtime the record will hold after this pass — the remote manifest's
+// v2 payload (manifests.src man_encode_mt).
+var sync_rpost_mts = make(map[string]int)
 
 // fetch every record of a collection as raw JSON objects, paginated.
 // sync_fetch_ok ends true only when every page arrived — callers that
@@ -162,6 +102,16 @@ func rec_mtime(rec) (mt) {
     v, e := json_get(rec, "._mtime")
     if e != "" { return mt }
     return parse_int(trim(v))
+}
+
+// _mtime the remote record will carry after push_doc: the doc's own, or
+// the stamp() injection when absent — approximated by now_ms() (the
+// inject runs a few instructions later inside push_doc; ms-level skew
+// is harmless for manifest bookkeeping).
+func push_mtime(rec) {
+    mt := rec_mtime(rec)
+    if mt > 0 { return mt }
+    return now_ms()
 }
 
 // ensure _mtime is present, injecting now_ms() at top level if missing.
@@ -255,8 +205,10 @@ func sync_one_ref(ref, tm, man, rman) {
     }
     // Remote pre-delete doubles as the post-merge remote id set for the
     // remote manifest. A push only fires for ids absent or tomb-dead on
-    // the remote, so no id can be recorded twice.
+    // the remote, so no id can be recorded twice. rpost_mt carries each
+    // id's remote-side _mtime for the manifest's v2 lines.
     rpost := []string{}
+    rpost_mt := make(map[string]int)
     j = 0
     while j < len(rr) {
         r := rr[j]
@@ -268,6 +220,7 @@ func sync_one_ref(ref, tm, man, rman) {
             }
         } else if id != "" {
             rpost = append(rpost, id)
+            rpost_mt[id] = mt
         }
         j = j + 1
     }
@@ -287,12 +240,20 @@ func sync_one_ref(ref, tm, man, rman) {
                 // local-only (or remote copy dead) → push
                 if push_doc(sync_remote, sync_remote_tok, ref, lrec, "remote") {
                     pushed = pushed + 1
-                    if id != "" { rpost = append(rpost, id) }
+                    if id != "" {
+                        rpost = append(rpost, id)
+                        rpost_mt[id] = push_mtime(lrec)
+                    }
                 }
             } else {
                 rm := rec_mtime(rrec)
                 if lm > rm {
-                    if push_doc(sync_remote, sync_remote_tok, ref, lrec, "remote") { pushed = pushed + 1 }
+                    if push_doc(sync_remote, sync_remote_tok, ref, lrec, "remote") {
+                        pushed = pushed + 1
+                        // the remote now holds the newer local doc —
+                        // refresh the mtime pre-delete recorded
+                        if id != "" { rpost_mt[id] = push_mtime(lrec) }
+                    }
                 } else if rm > lm {
                     if push_doc(sync_local, sync_local_tok, ref, rrec, "local") { pulled = pulled + 1 }
                 } else {
@@ -322,6 +283,7 @@ func sync_one_ref(ref, tm, man, rman) {
     sync_post_ids = post
     sync_post_ok = lok
     sync_rpost_ids = rpost
+    sync_rpost_mts = rpost_mt
     sync_rpost_ok = rok
     pout(ref + ": pushed=" + str(pushed) + " pulled=" + str(pulled) +
         " deleted=" + str(deleted) + " same=" + str(same) +
@@ -405,7 +367,7 @@ func sync_pass_once(refs) {
         ref := refs[i]
         if ref != sync_tomb_coll { sync_one_ref(ref, tm, man, rman) }
         manifest_note(ref, man, man_new, sync_post_ok, sync_post_ids)
-        manifest_note(ref, rman, rman_new, sync_rpost_ok, sync_rpost_ids)
+        manifest_note_mt(ref, rman, rman_new, sync_rpost_ok, sync_rpost_ids, sync_rpost_mts)
         i = i + 1
     }
     save_manifest(man_new, ckey, refs)
