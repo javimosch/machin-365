@@ -2,6 +2,8 @@
 // bkn/bkn.db* is always the ACTIVE database; each identity's parked copy
 // lives at bkn/accounts/<key>.db*, and bkn/.active-key records which key
 // owns the active files. See bkn_store_switch for the swap protocol.
+// The "_unclaimed" key holds pre-sign-in data; the first real identity to
+// activate adopts it (adopt_unclaimed_store) instead of stranding it.
 
 // entries of dir starting with prefix; empty when dir is missing
 func dir_names_prefixed(dir, prefix) (names) {
@@ -42,6 +44,208 @@ func valid_store_key(k) {
     return true
 }
 
+// Restart the bkn after a store change when it was running beforehand.
+// what prefixes each diagnostic ("store switched", "pre-sign-in data
+// adopted"). Same contract as the old inline block: 0 healthy, diagnostics
+// appended otherwise; service_spawn itself prints the happy path.
+func bkn_restart_after(was, what) (msg) {
+    msg = ""
+    if !was { return msg }
+    // Restart via service_spawn, never cmd_service_start: config.json
+    // still names the PREVIOUS identity until the caller saves the
+    // new one, so a nested start would re-resolve the old key and
+    // switch straight back — silently undoing this swap.
+    tok := local_admin_token()
+    if tok == "" {
+        return what + " but the bkn token could not be" +
+            " saved — run 'service start'; "
+    }
+    rc := service_spawn(tok)
+    if rc == 3 {
+        // Alive but unbound at the deadline — a slow boot, not a
+        // failure; it should come up on its own.
+        return what + "; bkn still starting —" +
+            " 'service status' to confirm; "
+    }
+    if rc != 0 {
+        return what + " but the bkn did not restart —" +
+            " run 'service start'; "
+    }
+    return msg
+}
+
+type CntRow struct { c int }
+type SqlTab struct { n string  s string }
+
+// Adopt the parked pre-auth (_unclaimed) store into the ACTIVE bkn.db*.
+// Runs while the bkn is stopped, after a store switch has settled — or on
+// the same-identity path to heal homes a pre-adoption build already
+// stranded. Two shapes:
+//   - no live store (fresh account): the parked files are renamed to
+//     bkn.db* — every table comes across untouched, including kv/files.
+//   - live store with data: rows merge table-by-table over sqlite ATTACH,
+//     INSERT OR IGNORE, so the account's own rows always win a conflict.
+// A table merges only when its DDL is identical on both sides — schema
+// drift skips that table rather than guessing at columns. Parked files are
+// removed only once the data is safely in place; on failure they stay put
+// and the note says where to find them.
+func adopt_unclaimed_store() (note) {
+    note = ""
+    bdir := suite_home() + "/bkn"
+    adir := bdir + "/accounts"
+    old := adir + "/_unclaimed.db"
+    if file_size(old) < 0 { return note }
+    // Pre-auth record count for the report — 0 when the file is not a
+    // readable bkn store. Opening and closing the db checkpoints its WAL,
+    // which can remove the -wal/-shm sidecars — so the parked file list is
+    // re-read at each use site rather than cached up front.
+    n := 0
+    odb := sqlite_open(old)
+    if odb != 0 {
+        rows := sqlite_query(odb, "SELECT COUNT(*) AS c FROM records")
+        if rows != "" {
+            cnt := parse(rows, []CntRow{})
+            if len(cnt) > 0 { n = cnt[0].c }
+        }
+        sqlite_close(odb)
+    }
+    // A live store is a bkn.db that opens AND carries the records table.
+    // No file at all, or a zero-byte husk, means the parked store can
+    // simply move into place; anything else gets the row merge below.
+    live := false
+    ndb := 0
+    // A zero-byte bkn.db is an empty husk — skip the open and let the
+    // rename path replace it; anything bigger must prove it is a store.
+    if file_size(bkn_db()) > 0 {
+        ndb = sqlite_open(bkn_db())
+        if ndb == 0 {
+            note = "could not open the local store to adopt" +
+                " pre-sign-in data — it stays at" +
+                " bkn/accounts/_unclaimed.db*; "
+            return note
+        }
+        mt := sqlite_query(ndb, "SELECT COUNT(*) AS c FROM" +
+            " sqlite_master WHERE type='table' AND name='records'")
+        if mt != "" {
+            cnt := parse(mt, []CntRow{})
+            if len(cnt) > 0 && cnt[0].c > 0 { live = true }
+        }
+        if !live {
+            // A non-empty file without the records table is not a bkn
+            // store — leave it and the parked copy exactly as found.
+            sqlite_close(ndb)
+            ndb = 0
+            note = "local store at bkn/bkn.db is not a recognized" +
+                " bkn database — pre-sign-in data left at" +
+                " bkn/accounts/_unclaimed.db*; "
+            return note
+        }
+    }
+    if !live {
+        if ndb != 0 { sqlite_close(ndb) }
+        // Clear whatever bkn.db* husk remains so an orphan -wal cannot
+        // attach to the adopted database, then move the parked files in.
+        stray := dir_names_prefixed(bdir, "bkn.db")
+        i := 0
+        while i < len(stray) {
+            remove(bdir + "/" + stray[i])
+            i = i + 1
+        }
+        parked := dir_names_prefixed(adir, "_unclaimed.db")
+        i = 0
+        while i < len(parked) {
+            nm := parked[i]
+            if nm == "_unclaimed.db" || has_prefix(nm, "_unclaimed.db-") {
+                system("mv -f " + shell_quote(adir + "/" + nm) + " " +
+                    shell_quote(bdir + "/bkn.db" + substr(nm, 13, len(nm))))
+            }
+            i = i + 1
+        }
+        if n > 0 {
+            note = "adopted " + str(n) + " pre-sign-in record(s) into this" +
+                " account's local store; "
+        } else {
+            note = "adopted the pre-sign-in local store into this" +
+                " account's store; "
+        }
+        return note
+    }
+    sqlite_exec(ndb, "PRAGMA busy_timeout = 5000")
+    if sqlite_exec(ndb, "ATTACH DATABASE '" +
+        replace(old, "'", "''") + "' AS uncl") != 0 {
+        sqlite_close(ndb)
+        note = "could not open the parked pre-auth store for merge —" +
+            " it stays at bkn/accounts/_unclaimed.db*; "
+        return note
+    }
+    ot := sqlite_query(ndb, "SELECT name AS n, sql AS s FROM" +
+        " uncl.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+    nt := sqlite_query(ndb, "SELECT name AS n, sql AS s FROM" +
+        " sqlite_master WHERE type='table'")
+    mtab := make(map[string]string)
+    if nt != "" {
+        nrows := parse(nt, []SqlTab{})
+        i := 0
+        while i < len(nrows) {
+            mtab[nrows[i].n] = nrows[i].s
+            i = i + 1
+        }
+    }
+    common := 0
+    failed := false
+    sqlite_exec(ndb, "BEGIN IMMEDIATE")
+    if ot != "" {
+        orows := parse(ot, []SqlTab{})
+        i := 0
+        while i < len(orows) {
+            t := orows[i]
+            if t.s != "" && mtab[t.n] == t.s {
+                common = common + 1
+                rc := sqlite_exec(ndb, "INSERT OR IGNORE INTO \"" + t.n +
+                    "\" SELECT * FROM uncl.\"" + t.n + "\"")
+                if rc != 0 { failed = true }
+            }
+            i = i + 1
+        }
+    }
+    if failed {
+        sqlite_exec(ndb, "ROLLBACK")
+    } else {
+        sqlite_exec(ndb, "COMMIT")
+    }
+    sqlite_exec(ndb, "DETACH DATABASE uncl")
+    sqlite_close(ndb)
+    if common == 0 {
+        note = "parked pre-auth store shares no tables with the local" +
+            " store — left at bkn/accounts/_unclaimed.db*; "
+        return note
+    }
+    if failed {
+        // Rolled back whole — the parked copy remains for the next
+        // attempt, which OR IGNORE would have made idempotent anyway.
+        note = "pre-auth store merge failed — left at" +
+            " bkn/accounts/_unclaimed.db* for retry; "
+        return note
+    }
+    parked := dir_names_prefixed(adir, "_unclaimed.db")
+    i := 0
+    while i < len(parked) {
+        nm := parked[i]
+        if nm == "_unclaimed.db" || has_prefix(nm, "_unclaimed.db-") {
+            remove(adir + "/" + nm)
+        }
+        i = i + 1
+    }
+    if n > 0 {
+        note = "merged " + str(n) + " pre-sign-in record(s) into this" +
+            " account's local store; "
+    } else {
+        note = "merged the pre-sign-in local store into this account's" +
+            " store; "
+    }
+    return note
+}
+
 // Switch the local bkn store to a different account identity. On an
 // identity change the active bkn.db* is parked under the PREVIOUS
 // identity's key and the incoming identity's parked store (if any) is
@@ -71,6 +275,26 @@ func bkn_store_switch(prev_server, prev_email, prev_org, server, email, org) (ms
     if pkey == nkey && file_size(bkn_db()) >= 0 {
         // already this identity's store — just (re)establish the marker
         write_file(bdir + "/.active-key", nkey)
+        // A pre-auth (_unclaimed) store parked by a build that predates
+        // adoption still holds the home's offline data unreachable —
+        // merge it into the live store once, then drop the parked copy.
+        if nkey != "_unclaimed" &&
+            len(dir_names_prefixed(bdir + "/accounts", "_unclaimed.db")) > 0 {
+            was := bkn_owner() == "ours"
+            if was {
+                cmd_service_stop()
+                if bkn_owner() == "ours" {
+                    msg = msg + "could not stop the local bkn —" +
+                        " pre-sign-in store left parked under" +
+                        " accounts/_unclaimed.db*; "
+                }
+            }
+            if msg == "" {
+                msg = msg + adopt_unclaimed_store()
+                msg = msg + bkn_restart_after(was,
+                    "pre-sign-in data adopted")
+            }
+        }
         return msg
     }
     was := bkn_owner() == "ours"
@@ -114,28 +338,14 @@ func bkn_store_switch(prev_server, prev_email, prev_org, server, email, org) (ms
         i = i + 1
     }
     if msg == "" { write_file(bdir + "/.active-key", nkey) }
-    if was {
-        // Restart via service_spawn, never cmd_service_start: config.json
-        // still names the PREVIOUS identity until the caller saves the
-        // new one, so a nested start would re-resolve the old key and
-        // switch straight back — silently undoing this swap.
-        tok := local_admin_token()
-        if tok == "" {
-            msg = msg + "store switched but the bkn token could not be" +
-                " saved — run 'service start'; "
-        } else {
-            rc := service_spawn(tok)
-            if rc == 3 {
-                // Alive but unbound at the deadline — a slow boot, not a
-                // failure; it should come up on its own.
-                msg = msg + "store switched; bkn still starting —" +
-                    " 'service status' to confirm; "
-            } else if rc != 0 {
-                msg = msg + "store switched but the bkn did not restart —" +
-                    " run 'service start'; "
-            }
-        }
+    // First real sign-in adopts the pre-auth (_unclaimed) store: parked
+    // above when it was the active db, or already sitting in accounts/
+    // from an older build — either way it becomes this account's data,
+    // not a silent orphan.
+    if msg == "" && nkey != "_unclaimed" {
+        msg = msg + adopt_unclaimed_store()
     }
+    msg = msg + bkn_restart_after(was, "store switched")
     return msg
 }
 

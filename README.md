@@ -96,6 +96,12 @@ talks to, so apps work fully offline and cannot tell whether a remote server
 exists. `sync` then replicates all store collections between the local and the
 remote bkn configured via `auth login`.
 
+Data created before the first sign-in is kept: the local store is
+partitioned per account, and the pre-auth (`_unclaimed`) store is adopted
+into the first account's store at `auth signup`/`auth login` — merged when
+the account already has local data, renamed into place otherwise — so
+offline-first records are never silently stranded.
+
 `service install` resolves the bkn binary in order: `--bin /path/to/bkn`,
 then `$MACHIN_BKN_BIN`, then `bkn`/`mbkn` on PATH, then an existing suite
 install — and finally downloads the latest
