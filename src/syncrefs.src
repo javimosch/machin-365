@@ -42,6 +42,38 @@ func warn_remote_discovery(st, err) {
         " set them via sync --collections or config set sync_collections")
 }
 
+// bkn ref shape, mirroring the server's own rule (store splitRef /
+// validSegment): <ns>/<coll> where each segment starts with a lowercase
+// letter and continues with [a-z0-9_-], at most 63 chars. Probe output is
+// untrusted — it arrives over HTTP from a remote we do not control — so a
+// discovered "ref" that cannot name a real collection is dropped before it
+// can be synced, provisioned on the remote, or persisted to config.json
+// (#109: intermittent phantom refs reached all three).
+func seg_ok(seg) {
+    if len(seg) == 0 || len(seg) > 63 { return false }
+    f := substr(seg, 0, 1)
+    if f < "a" || f > "z" { return false }
+    i := 0
+    while i < len(seg) {
+        c := substr(seg, i, i + 1)
+        good := false
+        if c >= "a" && c <= "z" { good = true }
+        if c >= "0" && c <= "9" { good = true }
+        if c == "-" || c == "_" { good = true }
+        if !good { return false }
+        i = i + 1
+    }
+    return true
+}
+
+func ref_ok(ref) {
+    at := index(ref, "/")
+    if at <= 0 { return false }
+    rest := substr(ref, at + 1, len(ref))
+    if index(rest, "/") >= 0 { return false }
+    return seg_ok(substr(ref, 0, at)) && seg_ok(rest)
+}
+
 func discover_refs(coll_arg) (refs) {
     refs = []string{}
     if coll_arg != "" { return parse_coll_list(coll_arg) }
@@ -51,6 +83,7 @@ func discover_refs(coll_arg) (refs) {
     remote_ok := false
     remote_st := 0
     remote_err := ""
+    dropped := 0
     i := 0
     while i < 2 {
         base := sync_remote
@@ -69,11 +102,19 @@ func discover_refs(coll_arg) (refs) {
                 r, e := json_get(body, ".collections[" + str(j) + "].ref")
                 if e != "" { break }
                 ref := parse(r, "")
-                if !has_ref(refs, ref) { refs = append(refs, ref) }
+                if !ref_ok(ref) {
+                    dropped = dropped + 1
+                } else if !has_ref(refs, ref) {
+                    refs = append(refs, ref)
+                }
                 j = j + 1
             }
         }
         i = i + 1
+    }
+    if dropped > 0 {
+        perr("machin-365: discovery dropped " + str(dropped) +
+            " malformed collection ref(s)")
     }
     if !remote_ok { warn_remote_discovery(remote_st, remote_err) }
     return refs
