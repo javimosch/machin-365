@@ -44,6 +44,22 @@ func load_catalog() {
     return cat
 }
 
+// Failure note for `catalog --refresh`: the transport error when no
+// response arrived, else "http <status>" plus the server's own error
+// message when the body carries one. A 404 gets a hint — a live server
+// without /catalog.json is the expected state until the hosted catalog
+// ships, and a bare status reads like a suite bug.
+func catalog_fetch_note(st, err, resp) {
+    if err != "" { return err }
+    if st == 404 { return "http 404 (server does not host a catalog)" }
+    m, e := json_get(resp, ".error.message")
+    if e == "" {
+        mm := parse(m, "")
+        if mm != "" { return "http " + str(st) + " " + mm }
+    }
+    return "http " + str(st)
+}
+
 func find_app(cat, id) (a, found) {
     a = CatApp{id: "", name: "", kind: "", repo: "", version: "", bin: "", desc: "", assets: []Asset{}}
     found = false

@@ -444,9 +444,11 @@ func catalog_refresh() (code) {
         eprintln("machin-365: no server configured — run: auth login --server URL")
         return 1
     }
-    st, body, err := http_request("GET", c.server + "/catalog.json", []string{}, "")
+    url := c.server + "/catalog.json"
+    st, body, err := http_request("GET", url, []string{}, "")
     if err != "" || st != 200 {
-        eprintln("machin-365: catalog fetch failed (http " + str(st) + ")")
+        eprintln("machin-365: catalog fetch failed: GET " + url +
+            " — " + catalog_fetch_note(st, err, body))
         return 1
     }
     cat := parse(body, Catalog{})
