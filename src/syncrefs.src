@@ -55,47 +55,100 @@ func ref_ok(ref) {
     return seg_ok(substr(ref, 0, at)) && seg_ok(rest)
 }
 
+// One side's /v1/collections answer, parsed into validated refs: each
+// ".collections[i].ref" that passes the bkn segment rule (ref_ok), deduped.
+// dropped counts the malformed ones for the caller's diagnostic. ok is
+// true only on a clean 200 — a failed probe yields an empty list the
+// caller must not read as "this side has no collections".
+func coll_probe(base, tok) (refs, st, err, ok, dropped) {
+    refs = []string{}
+    st = 0
+    err = ""
+    ok = false
+    dropped = 0
+    s, b, e := api_get(base, tok, "/v1/collections")
+    st = s
+    err = e
+    ok = e == "" && s == 200
+    if !ok { return }
+    j := 0
+    while true {
+        r, e := json_get(b, ".collections[" + str(j) + "].ref")
+        if e != "" { break }
+        ref := parse(r, "")
+        if !ref_ok(ref) {
+            dropped = dropped + 1
+        } else if !has_ref(refs, ref) {
+            refs = append(refs, ref)
+        }
+        j = j + 1
+    }
+    return
+}
+
 func discover_refs(coll_arg) (refs) {
     refs = []string{}
     if coll_arg != "" { return parse_coll_list(coll_arg) }
     c := load_config()
     if c.sync_collections != "" { return parse_coll_list(c.sync_collections) }
-    // probe both sides, union what each exposes
+    // probe both sides, union what each exposes — twice per side. The
+    // discovered set drives the whole pass (sync, remote provisioning, and
+    // --collections persistence), and probe output has intermittently
+    // yielded well-formed refs that exist on neither side (#109). When both
+    // probes of a side answer, a ref must appear in BOTH to be believed:
+    // transient garbage does not survive a second read. A failed second
+    // probe cannot disprove anything, so the side falls back to its first
+    // answer — the same trust level as the single probe this replaced. A
+    // collection created between the two probes is picked up next pass.
     remote_ok := false
     remote_st := 0
     remote_err := ""
     dropped := 0
+    unconfirmed := 0
     i := 0
     while i < 2 {
         base := sync_remote
         tok := sync_remote_tok
         if i == 1 { base = sync_local  tok = sync_local_tok }
-        st, body, err := api_get(base, tok, "/v1/collections")
-        ok := err == "" && st == 200
-        if i == 0 {
-            remote_ok = ok
-            remote_st = st
-            remote_err = err
-        }
-        if ok {
-            j := 0
-            while true {
-                r, e := json_get(body, ".collections[" + str(j) + "].ref")
-                if e != "" { break }
-                ref := parse(r, "")
-                if !ref_ok(ref) {
-                    dropped = dropped + 1
-                } else if !has_ref(refs, ref) {
-                    refs = append(refs, ref)
+        r1, st1, e1, ok1, d1 := coll_probe(base, tok)
+        r2, st2, e2, ok2, d2 := coll_probe(base, tok)
+        dropped = dropped + d1 + d2
+        side := []string{}
+        if ok1 && ok2 {
+            a := 0
+            while a < len(r1) {
+                if has_ref(r2, r1[a]) && !has_ref(side, r1[a]) {
+                    side = append(side, r1[a])
                 }
-                j = j + 1
+                a = a + 1
             }
+            unconfirmed = unconfirmed + len(r1) + len(r2) - 2 * len(side)
+        } else if ok1 {
+            side = r1
+        } else if ok2 {
+            side = r2
+        }
+        if i == 0 {
+            remote_ok = ok1 || ok2
+            // the warn below only fires when BOTH probes failed — report
+            // the latest failure either way
+            if !ok1 { remote_st = st1  remote_err = e1 }
+            if !ok2 { remote_st = st2  remote_err = e2 }
+        }
+        a := 0
+        while a < len(side) {
+            if !has_ref(refs, side[a]) { refs = append(refs, side[a]) }
+            a = a + 1
         }
         i = i + 1
     }
     if dropped > 0 {
         perr("machin-365: discovery dropped " + str(dropped) +
             " malformed collection ref(s)")
+    }
+    if unconfirmed > 0 {
+        perr("machin-365: discovery ignored " + str(unconfirmed) +
+            " unconfirmed collection ref(s)")
     }
     if !remote_ok { warn_remote_discovery(remote_st, remote_err) }
     return refs
