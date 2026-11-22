@@ -47,12 +47,15 @@ var sync_refresh_warned = false
 // fetch_records call returned the whole collection — a partial fetch
 // must not feed delete detection or become the new baseline.
 // sync_post_*/sync_rpost_* carry the just-processed ref's post-merge
-// local/remote id sets back to sync_pass_once for the manifest updates.
+// local/remote id sets back to sync_pass_once for the manifest updates;
+// sync_rpost_mts carries each remote id's post-merge _mtime for the v2
+// remote manifest.
 var sync_fetch_ok = true
 var sync_post_ok = false
 var sync_post_ids = []string{}
 var sync_rpost_ok = false
 var sync_rpost_ids = []string{}
+var sync_rpost_mts = make(map[string]int)
 
 // "HTTP 403 <server message>" style detail; transport errors pass through.
 func http_errnote(st, err, resp) {
@@ -255,8 +258,11 @@ func sync_one_ref(ref, tm, man, rman) {
     }
     // Remote pre-delete doubles as the post-merge remote id set for the
     // remote manifest. A push only fires for ids absent or tomb-dead on
-    // the remote, so no id can be recorded twice.
+    // the remote, so no id can be recorded twice. rpost_mts records the
+    // remote-side _mtime each id will hold after the merge — the fetch
+    // value here, overwritten below when a push replaces the remote copy.
     rpost := []string{}
+    rpost_mts := make(map[string]int)
     j = 0
     while j < len(rr) {
         r := rr[j]
@@ -268,6 +274,7 @@ func sync_one_ref(ref, tm, man, rman) {
             }
         } else if id != "" {
             rpost = append(rpost, id)
+            rpost_mts[id] = mt
         }
         j = j + 1
     }
@@ -278,6 +285,10 @@ func sync_one_ref(ref, tm, man, rman) {
         lrec := lr[j]
         id := rec_id(lrec)
         lm := rec_mtime(lrec)
+        // remote-side _mtime a push of this record leaves behind: its
+        // own stamp, or the now_ms() stamp() injects when it has none.
+        pmt := lm
+        if pmt == 0 { pmt = now_ms() }
         ldead := tomb_wins(tm, ref, id, lm)
         rrec := find_rec(rr, id)
         rdead := rrec != "" && tomb_wins(tm, ref, id, rec_mtime(rrec))
@@ -287,12 +298,18 @@ func sync_one_ref(ref, tm, man, rman) {
                 // local-only (or remote copy dead) → push
                 if push_doc(sync_remote, sync_remote_tok, ref, lrec, "remote") {
                     pushed = pushed + 1
-                    if id != "" { rpost = append(rpost, id) }
+                    if id != "" {
+                        rpost = append(rpost, id)
+                        rpost_mts[id] = pmt
+                    }
                 }
             } else {
                 rm := rec_mtime(rrec)
                 if lm > rm {
-                    if push_doc(sync_remote, sync_remote_tok, ref, lrec, "remote") { pushed = pushed + 1 }
+                    if push_doc(sync_remote, sync_remote_tok, ref, lrec, "remote") {
+                        pushed = pushed + 1
+                        rpost_mts[id] = pmt
+                    }
                 } else if rm > lm {
                     if push_doc(sync_local, sync_local_tok, ref, rrec, "local") { pulled = pulled + 1 }
                 } else {
@@ -323,6 +340,7 @@ func sync_one_ref(ref, tm, man, rman) {
     sync_post_ok = lok
     sync_rpost_ids = rpost
     sync_rpost_ok = rok
+    sync_rpost_mts = rpost_mts
     pout(ref + ": pushed=" + str(pushed) + " pulled=" + str(pulled) +
         " deleted=" + str(deleted) + " same=" + str(same) +
         " local=" + str(len(lr)) + " remote=" + str(len(rr)))
@@ -405,7 +423,8 @@ func sync_pass_once(refs) {
         ref := refs[i]
         if ref != sync_tomb_coll { sync_one_ref(ref, tm, man, rman) }
         manifest_note(ref, man, man_new, sync_post_ok, sync_post_ids)
-        manifest_note(ref, rman, rman_new, sync_rpost_ok, sync_rpost_ids)
+        remote_manifest_note(ref, rman, rman_new, sync_rpost_ok,
+            sync_rpost_ids, sync_rpost_mts)
         i = i + 1
     }
     save_manifest(man_new, ckey, refs)
