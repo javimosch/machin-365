@@ -3,26 +3,7 @@
 // collection discovery: --collections arg > config.sync_collections >
 // GET /v1/collections (Go bkn only — machin-bkn has no HTTP list route).
 // coll_arg is the already-parsed --collections/--coll value ("" = flag absent).
-
-// comma-separated list → refs ("a/b, c/d" tolerates spaces)
-func parse_coll_list(s) (refs) {
-    refs = []string{}
-    cur := ""
-    i := 0
-    while i <= len(s) {
-        ch := ","
-        if i < len(s) { ch = substr(s, i, i + 1) }
-        if ch == "," {
-            r := trim(cur)
-            if r != "" { refs = append(refs, r) }
-            cur = ""
-        } else {
-            cur = cur + ch
-        }
-        i = i + 1
-    }
-    return refs
-}
+// parse_coll_list lives in colls.src with the ref validators.
 
 // A remote probe that does not return 200 (older bkn, non-bkn server,
 // missing route) used to be indistinguishable from "remote has no

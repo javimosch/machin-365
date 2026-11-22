@@ -461,6 +461,19 @@ func cmd_sync(a) (code) {
         eprintln("machin-365: --collections named no collections")
         return 2
     }
+    // --collections values were already validated in sync_parse_args; this
+    // catches malformed refs that came from config.sync_collections or a
+    // server probe instead — a poisoned config must fail loudly, not 404
+    // every pass forever.
+    bad := first_bad_ref(refs)
+    if bad != "" {
+        eprintln("machin-365: invalid collection ref '" + bad + "' — expected ns/coll")
+        if !have_coll && load_config().sync_collections != "" {
+            eprintln("hint: check sync_collections in config.json or set it via:" +
+                " machin-365 config set sync_collections a/b,c/d")
+        }
+        return 2
+    }
     if len(refs) == 0 {
         println("nothing to sync — no collections found")
         println("hint: machin-365 sync --collections ns/coll,ns/coll2  (remembered)")
@@ -468,22 +481,12 @@ func cmd_sync(a) (code) {
         return code
     }
 
-    if have_coll { persist_coll_arg(refs) }
-
     if watch > 0 {
-        sync_watch(refs, watch)
+        sync_watch(refs, watch, have_coll)
         return code
     }
     sync_pass(refs)
     if sync_local_dead || sync_err_count > 0 { return 1 }
+    if have_coll { persist_coll_arg(refs) }
     return code
-}
-
-func has_ref(refs, ref) {
-    i := 0
-    while i < len(refs) {
-        if refs[i] == ref { return true }
-        i = i + 1
-    }
-    return false
 }
