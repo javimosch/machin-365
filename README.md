@@ -44,6 +44,7 @@ machin-365 auth org create <slug> [--name N]   # create an org (creator becomes 
 machin-365 auth member add <org> <user> [--role owner|admin|member]
 machin-365 auth member list <org> | member remove <org> <user>
 machin-365 auth switch-org <slug>       # re-scope the session, no password
+machin-365 auth adopt-local             # merge parked pre-sign-in data into the active store
 machin-365 auth status | logout
 machin-365 config                   # paths + account state
 machin-365 config set sync_collections m365/tasks,sync/tombstones
@@ -108,7 +109,9 @@ Data created before the first sign-in is kept: the local store is
 partitioned per account, and the pre-auth (`_unclaimed`) store is adopted
 into the first account's store at `auth signup`/`auth login` — merged when
 the account already has local data, renamed into place otherwise — so
-offline-first records are never silently stranded.
+offline-first records are never silently stranded. If a merge fails or a
+home was stranded by an older build, `auth adopt-local` re-runs the
+adoption from the parked copy under `bkn/accounts/_unclaimed.db*`.
 
 `service install` resolves the bkn binary in order: `--bin /path/to/bkn`,
 then `$MACHIN_BKN_BIN`, then `bkn`/`mbkn` on PATH, then an existing suite
