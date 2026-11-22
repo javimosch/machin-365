@@ -98,8 +98,13 @@ func api_put(base, tok, path, body) {
 }
 
 // PUT /v1/store/<ref> declaring the default org-wide policy. Returns true
-// only when the server accepted the declaration.
+// only when the server accepted the declaration. A ref that cannot name a
+// real collection (fails the bkn segment rule — see ref_ok in syncrefs.src)
+// is refused outright: provisioning exists to declare collections sync
+// actually found, and a malformed ref is corruption, not a collection
+// (#109 — phantom discovery refs must never mint server-side rows).
 func remote_provision(ref) {
+    if !ref_ok(ref) { return false }
     if has_ref(sync_provision_tried, ref) { return false }
     sync_provision_tried = append(sync_provision_tried, ref)
     if jwt_org(sync_remote_tok) == "" { return false }
