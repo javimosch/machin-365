@@ -1,6 +1,141 @@
 // syncapi.src — sync endpoint resolution and store API call helpers,
 // split from sync.src to keep files under 500 LOC.
 
+// fetch every record of a collection as raw JSON objects, paginated.
+// sync_fetch_ok ends true only when every page of EVERY range arrived —
+// callers that persist or diff the result (the sync manifest) must check
+// it. sync_fetch_absent ends true only when the fetch stopped on the quiet
+// private-admin refusal: the collection is confirmed absent for this
+// token, so records missing from the view really are absent *for us*
+// and writes would be refused the same way — the merge may still run.
+// Every other early exit (transport error, non-private status, partial
+// page) leaves the contents unknown: absence in the partial view means
+// nothing and the merge must not run on it (#152).
+// sync/tombstones is fetched with server-side _mtime windows so markers
+// past the retention window never leave the store (tombs.src): live ms
+// markers via ?_mtime=gt:<cutoff>, plus a second range
+// ?_mtime=lt:<mtime_ms_floor> for markers written in epoch SECONDS —
+// they sit below the ms cutoff and would otherwise be invisible to both
+// sides (#126). The ranges are disjoint, so no doc can arrive twice;
+// load_tombs/canon_tombs still apply the cutoff client-side after
+// rec_mtime's seconds→ms scaling, so the wide low range only costs
+// transfer of dormant non-ms markers.
+func fetch_records(base, tok, ref, side) (recs) {
+    recs = []string{}
+    sync_fetch_ok = true
+    sync_fetch_absent = false
+    if ref == sync_tomb_coll {
+        recs = fetch_range(base, tok, ref, side,
+            "&_mtime=gt:" + str(tomb_cutoff()))
+        // A confirmed-absent first range means the collection itself is
+        // refused for this token — the low range would fail the same
+        // way, so don't spend the call.
+        if sync_fetch_absent { return recs }
+        // Anything short of a proven-empty answer leaves the low range's
+        // quiet refusal meaningful: absent is only confirmed when NO
+        // range produced records or completed — a lone low-range refusal
+        // after range 1 answered is contradictory, i.e. unknown state
+        // (#152), not confirmation.
+        proven1 := sync_fetch_ok || len(recs) > 0
+        low := fetch_range(base, tok, ref, side,
+            "&_mtime=lt:" + str(mtime_ms_floor))
+        if proven1 { sync_fetch_absent = false }
+        i := 0
+        while i < len(low) {
+            recs = append(recs, low[i])
+            i = i + 1
+        }
+        return recs
+    }
+    return fetch_range(base, tok, ref, side, "")
+}
+
+// One paginated range of fetch_records; filt is an extra server-side
+// query clause ("" or "&_mtime=..."). Failures clear sync_fetch_ok but
+// never set it — fetch_records owns the flag across its ranges.
+func fetch_range(base, tok, ref, side, filt) (recs) {
+    recs = []string{}
+    off := 0
+    while true {
+        q := "?limit=500&offset=" + str(off) + filt
+        st, body, err := api_get(base, tok, "/v1/store/" + ref + q)
+        if err != "" || st != 200 {
+            quiet := false
+            if side == "remote" && is_private_admin_err(st, body) {
+                // Read-path self-declaration is gated on local writes being
+                // pending for this ref (sync_prov_gate, set by sync_one_ref):
+                // declaring an empty<->empty ref leaves a phantom collection
+                // on the server (#101). Gate 2 retries after the PUT; gate 1
+                // reports the ref absent instead of erroring; gate 0 means
+                // the local fetch already failed, so stay quiet here.
+                if sync_prov_gate == 2 {
+                    if remote_provision(ref) { continue }
+                } else {
+                    // gate 1 + discovered: the remote administers this
+                    // ref privately — skip-message, not a typo hint (#107)
+                    if sync_prov_gate == 1 {
+                        if sync_discovered { sync_deny_ref(ref) } else { sync_note_absent(ref) }
+                    }
+                    quiet = true
+                }
+            }
+            if !quiet {
+                // A discovered ref the remote administers privately is
+                // skipped, not failed — see sync_deny_ref (#107).
+                if side == "remote" && sync_discovered &&
+                    is_private_admin_err(st, body) {
+                    sync_deny_ref(ref)
+                } else {
+                    sync_note_err(side, "GET /v1/store/" + ref, st, err, body)
+                }
+            }
+            sync_fetch_ok = false
+            // quiet == the private-admin refusal was accepted as
+            // confirmed-absent (undeclared/invisible collection); every
+            // other early exit leaves the remote state unknown (#152)
+            sync_fetch_absent = quiet
+            break
+        }
+        i := 0
+        n := 0
+        while true {
+            r, e := json_get(body, ".records[" + str(i) + "]")
+            if e != "" { break }
+            recs = append(recs, r)
+            note_mtime_suspect(r)
+            i = i + 1
+            n = n + 1
+        }
+        if n < 500 { break }
+        off = off + 500
+    }
+    return recs
+}
+
+func post_doc(base, tok, ref, doc, side) {
+    if side == "remote" && sync_ref_denied(ref) { return false }
+    st, resp, err := api_post(base, tok, "/v1/store/" + ref, doc)
+    ok := (st == 200 || st == 201) && err == ""
+    if !ok && side == "remote" && is_private_admin_err(st, resp) && remote_provision(ref) {
+        st, resp, err = api_post(base, tok, "/v1/store/" + ref, doc)
+        ok = (st == 200 || st == 201) && err == ""
+    }
+    if !ok {
+        // A discovered ref the remote administers privately is skipped,
+        // not failed — see sync_deny_ref (#107).
+        if side == "remote" && sync_discovered && is_private_admin_err(st, resp) {
+            sync_deny_ref(ref)
+        } else {
+            sync_note_err(side, "POST /v1/store/" + ref, st, err, resp)
+        }
+    }
+    return ok
+}
+
+func push_doc(base, tok, ref, rec, side) {
+    return post_doc(base, tok, ref, stamp(rec, ref), side)
+}
+
 // "HTTP 403 <server message>" style detail; transport errors pass through.
 func http_errnote(st, err, resp) {
     if err != "" { return err }
@@ -164,6 +299,7 @@ func pctenc(s, keep_high) (out) {
 }
 
 func api_delete(base, tok, ref, id, side) {
+    if side == "remote" && sync_ref_denied(ref) { return false }
     path := "/v1/store/" + ref
     if api_del_mode(base, tok) == "path" {
         path = path + "/" + pctenc(id, false)
@@ -173,7 +309,15 @@ func api_delete(base, tok, ref, id, side) {
     st, resp, err := http_request("DELETE", base + path,
         []string{"Authorization: Bearer " + tok}, "")
     ok := (st == 200 || st == 204) && err == ""
-    if !ok { sync_note_err(side, "DELETE " + path, st, err, resp) }
+    if !ok {
+        // A discovered ref the remote administers privately is skipped,
+        // not failed — see sync_deny_ref (#107).
+        if side == "remote" && sync_discovered && is_private_admin_err(st, resp) {
+            sync_deny_ref(ref)
+        } else {
+            sync_note_err(side, "DELETE " + path, st, err, resp)
+        }
+    }
     return ok
 }
 

@@ -149,8 +149,10 @@ remembered in `config.json` (`sync_collections`) on first use, and
 `sync` / `sync --watch` keep working without retyping the list. Refs must be
 `ns/coll` — a malformed entry is rejected with exit 2 and never persisted,
 and the list is only saved after a pass completes without call failures.
-With no configured set, sync probes `GET /v1/collections` on both sides;
-`--collections` remains the override for servers without that route.
+With no configured set, sync probes `GET /v1/collections` on the local bkn —
+collections that exist only on the remote are not auto-synced (on a
+shared server the remote list includes other tenants' collections), so
+add them explicitly via `--collections` or `config set sync_collections`.
 
 **Deletes propagate via tombstones**: before deleting a synced doc, the app
 POSTs `{"ref":"ns/coll","id":"ns/coll|<id>","_mtime":T}` (`T` =
