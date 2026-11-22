@@ -13,6 +13,15 @@ func catalog_path() { return suite_home() + "/catalog.json" }
 func installed_path() { return suite_home() + "/installed.json" }
 func manifest_path() { return suite_home() + "/sync-manifest.txt" }
 func remote_manifest_path() { return suite_home() + "/sync-remote-manifest.txt" }
+
+// Per-identity baseline files: sync-manifest.<key>.txt and
+// sync-remote-manifest.<key>.txt, where <key> is the 24-hex manifest
+// key — one baseline per account+endpoint identity so an account/org
+// switch parks the old baseline instead of discarding it (manifests.src,
+// #118). The functions above name the pre-per-key single-slot files,
+// kept only as the migration source.
+func manifest_stem() { return suite_home() + "/sync-manifest." }
+func remote_manifest_stem() { return suite_home() + "/sync-remote-manifest." }
 func apps_dir() { return suite_home() + "/apps" }
 func data_root() { return suite_home() + "/data" }
 
