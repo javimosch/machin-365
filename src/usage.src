@@ -26,7 +26,7 @@ func print_usage() {
     println("  auth logout                   clear stored tokens")
     println("  config                        show suite paths and account state")
     println("  config set sync_collections a/b,c/d   set the sticky sync collection list")
-    println("  service install [--bin PATH]  install the local bkn binary (probes + starts it)")
+    println("  service install [--bin PATH]  install bkn — latest release, or --bin/env/PATH")
     println("  service start|stop|status     manage the local bkn instance")
     println("  service reset [--yes]         wipe ALL local bkn data (TTY prompts; --yes skips)")
     println("  sync [--collections a/b,c/d] [--watch [secs]]")

@@ -65,14 +65,27 @@ func cmd_service_install(a) (code) {
         return 2
     }
     if src == "" { src = find_bkn() }
+    // Nothing local: fall back to the latest machin-bkn release asset for
+    // this platform — the same release-asset path `install <app>` uses.
+    // --bin / MACHIN_BKN_BIN / PATH / an existing install all win above.
+    fetched := ""
+    flabel := ""
+    if src == "" {
+        fp, fl := bkn_fetch_release()
+        if fp != "" { src = fp  fetched = fp  flabel = fl }
+    }
+    disp := src
+    if flabel != "" { disp = flabel }
     if src == "" {
         eprintln("machin-365: no bkn binary found — pass --bin /path/to/bkn")
+        eprintln("  release binaries: https://github.com/javimosch/machin-bkn/releases")
         return 1
     }
     system("mkdir -p '" + suite_home() + "/bin' '" + suite_home() + "/bkn'")
     b := read_file_bytes(src)
+    if fetched != "" { remove(fetched) }
     if len(b) == 0 {
-        eprintln("machin-365: cannot read " + src)
+        eprintln("machin-365: cannot read " + disp)
         return 1
     }
     // Snapshot the previous install so a failed verification restores it —
@@ -89,7 +102,7 @@ func cmd_service_install(a) (code) {
     detail := probe_binary(bkn_bin())
     if detail != "" {
         restore_bkn_bin(oldb, had_old)
-        eprintln("machin-365: " + src + " cannot run on this host — not installed")
+        eprintln("machin-365: " + disp + " cannot run on this host — not installed")
         eprintln("  " + detail)
         return 1
     }
@@ -124,9 +137,9 @@ func cmd_service_install(a) (code) {
         if foreign {
             // The port error above already says why — the binary itself
             // was never the problem.
-            eprintln("machin-365: " + src + " not installed")
+            eprintln("machin-365: " + disp + " not installed")
         } else {
-            eprintln("machin-365: " + src + " is not a working bkn — install rejected")
+            eprintln("machin-365: " + disp + " is not a working bkn — install rejected")
             if tail != "" { eprintln("  " + tail) }
         }
         if was_running && had_old && !foreign { cmd_service_start() }
@@ -588,5 +601,8 @@ func cmd_service_status() {
         println("hint: set MACHIN_365_BKN_PORT for this home, or stop the other instance")
     } else {
         println("bkn: not running")
+        if file_size(bkn_bin()) <= 0 {
+            println("hint: no bkn installed — run: machin-365 service install")
+        }
     }
 }
