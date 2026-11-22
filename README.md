@@ -138,7 +138,11 @@ $MACHIN_365_HOME (default ~/.local/share/machin-365)
 Installed apps also get a `.desktop` entry, so they appear in the OS app
 menu — no custom launcher needed. Entries launch through `machin-365 run`
 (service autostart included) with `MACHIN_365_HOME` baked in, and are
-namespaced per suite home so multiple homes can coexist. Entries whose
+namespaced per suite home so multiple homes can coexist. Entries from a
+non-default home carry the home's basename (or a hash when the basename
+is generic) in `Name=` and the full home path in `Comment=`, so same-named
+apps from different homes stay distinguishable in the menu; the default
+home keeps the bare app name. Entries whose
 suite home was deleted or whose launcher binary moved away are dead —
 `init` sweeps them automatically and `machin-365 prune` does it on demand;
 live entries belonging to other suite homes are left untouched.
