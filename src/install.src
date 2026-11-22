@@ -121,13 +121,37 @@ func desktop_name(id) {
     return "machin-365-" + id + "-" + substr(sha256(suite_home()), 0, 12) + ".desktop"
 }
 
+// desktop_disc is the label that keeps same-named apps from different
+// suite homes distinguishable in the OS app menu: "" for the default
+// home (single-home installs keep the bare app name), else the home
+// dir's basename — or a hash prefix when the basename cannot tell homes
+// apart ("/", ".", "..", or the generic "machin-365" dir name a relocated
+// default-layout home would share).
+func desktop_disc() {
+    h := suite_home()
+    if h == env("HOME") + "/.local/share/machin-365" { return "" }
+    b := base_name(h)
+    if b == "" || b == "." || b == ".." || b == "/" || b == "machin-365" {
+        return substr(sha256(h), 0, 8)
+    }
+    return b
+}
+
 func write_desktop_file(id, app, bin) {
     d := desktop_dir()
     system("mkdir -p '" + d + "'")
+    // Non-default homes suffix Name with the home discriminator and carry
+    // the full home path in Comment, so entries that coexist in the app
+    // menu are tellable apart without opening the files.
+    disc := desktop_disc()
+    dname := app.name
+    if disc != "" { dname = dname + " (" + disc + ")" }
+    cmt := app.desc
+    if disc != "" { cmt = cmt + " [suite home: " + suite_home() + "]" }
     body := "[Desktop Entry]\n"
     body = body + "Type=Application\n"
-    body = body + "Name=" + app.name + "\n"
-    body = body + "Comment=" + app.desc + "\n"
+    body = body + "Name=" + dname + "\n"
+    body = body + "Comment=" + cmt + "\n"
     // Launch through `run`, not the app binary: a menu launch then gets
     // service autostart and the suite home baked in below — the same path
     // as `machin-365 run <id>` from a shell.
