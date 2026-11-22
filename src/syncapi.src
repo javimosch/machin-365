@@ -1,0 +1,67 @@
+// syncapi.src — sync endpoint resolution and store API call helpers,
+// split from sync.src to keep files under 500 LOC.
+
+// "HTTP 403 <server message>" style detail; transport errors pass through.
+func http_errnote(st, err, resp) {
+    if err != "" { return err }
+    m, e := json_get(resp, ".error.message")
+    if e == "" {
+        mm := parse(m, "")
+        if mm != "" { return "HTTP " + str(st) + " " + mm }
+    }
+    return "HTTP " + str(st)
+}
+
+func sync_note_err(side, what, st, err, resp) {
+    sync_err_count = sync_err_count + 1
+    if side == "remote" && auth_class_err(st, resp) { sync_remote_auth_err = true }
+    msg := side + " " + what + " failed: " + http_errnote(st, err, resp)
+    i := 0
+    while i < len(sync_err_msgs) {
+        if sync_err_msgs[i] == msg { return }
+        i = i + 1
+    }
+    if len(sync_err_msgs) < 12 { sync_err_msgs = append(sync_err_msgs, msg) }
+}
+
+func sync_setup() {
+    c := load_config()
+    sync_remote = env("MACHIN_365_REMOTE")
+    if sync_remote == "" { sync_remote = c.server }
+    sync_remote_tok = env("MACHIN_365_REMOTE_TOKEN")
+    if sync_remote_tok == "" { sync_remote_tok = c.token }
+    sync_local = env("MACHIN_365_LOCAL")
+    if sync_local == "" { sync_local = local_url() }
+    sync_local_tok = env("MACHIN_365_LOCAL_TOKEN")
+    if sync_local_tok == "" { sync_local_tok = c.local_token }
+}
+
+func api_get(base, tok, path) {
+    st, body, err := http_request("GET", base + path,
+        []string{"Authorization: Bearer " + tok}, "")
+    return st, body, err
+}
+
+func api_post(base, tok, path, body) {
+    st, resp, err := http_request("POST", base + path,
+        []string{"Authorization: Bearer " + tok, "Content-Type: application/json"}, body)
+    return st, resp, err
+}
+
+func api_delete(base, tok, path, side) {
+    st, resp, err := http_request("DELETE", base + path,
+        []string{"Authorization: Bearer " + tok}, "")
+    ok := (st == 200 || st == 204) && err == ""
+    if !ok { sync_note_err(side, "DELETE " + path, st, err, resp) }
+    return ok
+}
+
+// One transport-level probe of the local endpoint per pass. A connect
+// failure means nothing is listening — say so once instead of reporting a
+// wall of per-call "connect" errors. Any HTTP status counts as alive:
+// auth and store errors are still reported per call, where they belong.
+func local_alive() {
+    _, _, err := api_get(sync_local, sync_local_tok,
+        "/v1/store/" + sync_tomb_coll + "?limit=1")
+    return err == ""
+}
