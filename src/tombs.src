@@ -10,11 +10,11 @@
 // stops fetching, merging and honouring them, so a pass costs
 // O(deletes inside the window) instead of O(deletes ever). Expired
 // markers are NOT deleted from the store: their doc ids contain the
-// ref's "/" and the store API's DELETE route addresses a record by a
-// single path segment, so compound-id docs cannot be removed over HTTP
-// (verified against machin-bkn). They stay on disk as dormant rows;
-// reclaiming them needs a bkn route that accepts multi-segment or
-// query-addressed ids. The trade-off is a resurrection window: a peer
+// ref's "/" and a DELETE per expired row would cost a call every pass
+// for rows nothing reads. api_delete's query/encoded-path forms can
+// address them (syncapi.src), so a future sweep could reclaim them —
+// it just isn't worth a call per dormant row. The trade-off is a
+// resurrection window: a peer
 // offline longer than the retention window that still holds a deleted
 // record will push it back (same failure family as #84/#85). 30 days is
 // the conservative end of the window the issue suggests; it assumes
@@ -86,11 +86,11 @@ func canon_tombs(base, tok, side) {
             dmt := 0
             if dup != "" { dmt = rec_mtime(dup) }
             if dmt >= mt {
-                api_delete(base, tok, "/v1/store/" + sync_tomb_coll + "/" + id, side)
+                api_delete(base, tok, sync_tomb_coll, id, side)
             } else if push_doc(base, tok, sync_tomb_coll,
                 "{\"ref\":" + json(ref) + ",\"id\":" + json(nid) +
                 ",\"_mtime\":" + str(mt) + "}", side) {
-                api_delete(base, tok, "/v1/store/" + sync_tomb_coll + "/" + id, side)
+                api_delete(base, tok, sync_tomb_coll, id, side)
             }
         }
         i = i + 1

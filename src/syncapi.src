@@ -48,7 +48,84 @@ func api_post(base, tok, path, body) {
     return st, resp, err
 }
 
-func api_delete(base, tok, path, side) {
+// --- record deletes -------------------------------------------------------
+//
+// Record ids are arbitrary strings — '/' included (javimosch/machin-365#140)
+// — and the two bkn implementations carry them on DELETE differently:
+//
+//   query — DELETE /v1/store/<ref>?id=<enc>: the machin-bkn collection
+//           route. Its record route reads only segs[4], so a '/'-bearing
+//           id in the path truncates to the prefix and deletes the WRONG
+//           record; its query values ARE percent-decoded, so ?id= carries
+//           the full id.
+//   path  — DELETE /v1/store/<ref>/<enc>: the Go bkn's {id} wildcard
+//           matches one ESCAPED segment and unescapes it (%2F -> '/'),
+//           but it registers no collection-level DELETE, so ?id= is a
+//           405 there.
+//
+// The form is probed once per base with a bare DELETE on the tombstone
+// collection: machin-bkn answers 400 ("DELETE needs ?id="), Go bkn 405 —
+// a request that cannot delete anything on either. The answer is cached
+// per base because local and remote may be different implementations.
+var sync_del_mode = make(map[string]string)
+
+func api_del_mode(base, tok) (mode) {
+    mode = sync_del_mode[base]
+    if mode != "" { return mode }
+    st, _, err := http_request("DELETE",
+        base + "/v1/store/" + sync_tomb_coll,
+        []string{"Authorization: Bearer " + tok}, "")
+    mode = "query"
+    if err == "" {
+        if st == 405 { mode = "path" }
+        sync_del_mode[base] = mode
+    }
+    return mode
+}
+
+// RFC-3986 unreserved bytes pass through; everything else becomes %XX.
+// '.' is excluded on purpose: a literal "." or ".." segment would be
+// path-cleaned by the Go mux before {id} ever sees it, so it must arrive
+// escaped. keep_high leaves bytes >= 0x80 raw — required for the query
+// form, whose decoder (machin-bkn urlDecode) only resolves escapes into
+// printable ASCII and would mangle a %XX-encoded UTF-8 id; the path form
+// encodes them so the request line stays pure ASCII for any proxy.
+func pct_ok(c) {
+    if c >= 48 && c <= 57 { return true }
+    if c >= 65 && c <= 90 { return true }
+    if c >= 97 && c <= 122 { return true }
+    if c == 45 || c == 95 || c == 126 { return true }
+    return false
+}
+
+func pct_hex(c) (h) {
+    d := "0123456789ABCDEF"
+    h = substr(d, c / 16, c / 16 + 1) + substr(d, c % 16, c % 16 + 1)
+}
+
+func pctenc(s, keep_high) (out) {
+    b := bytes(s)
+    out = ""
+    i := 0
+    while i < len(b) {
+        c := byte_at(b, i)
+        if pct_ok(c) || (keep_high && c > 126) {
+            out = out + substr(s, i, i + 1)
+        } else {
+            out = out + "%" + pct_hex(c)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+func api_delete(base, tok, ref, id, side) {
+    path := "/v1/store/" + ref
+    if api_del_mode(base, tok) == "path" {
+        path = path + "/" + pctenc(id, false)
+    } else {
+        path = path + "?id=" + pctenc(id, true)
+    }
     st, resp, err := http_request("DELETE", base + path,
         []string{"Authorization: Bearer " + tok}, "")
     ok := (st == 200 || st == 204) && err == ""
