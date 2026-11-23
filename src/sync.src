@@ -362,6 +362,7 @@ func sync_pass_once(refs) {
     sync_err_msgs = []string{}
     sync_remote_auth_err = false
     sync_provision_tried = []string{}
+    sync_absent_pass = []string{}
     if !local_alive() {
         if !sync_local_dead {
             perr("machin-365: local bkn not running at " + sync_local +
@@ -492,6 +493,6 @@ func cmd_sync(a) (code) {
     }
     sync_pass(refs)
     if sync_local_dead || sync_err_count > 0 { return 1 }
-    if have_coll { persist_coll_arg(refs) }
+    if have_coll { return persist_coll_flag(refs) }
     return code
 }
