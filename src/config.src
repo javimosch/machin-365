@@ -107,7 +107,8 @@ func cmd_config_set(a) (code) {
     }
     bad := first_bad_ref(refs)
     if bad != "" {
-        eprintln("machin-365: invalid collection ref '" + bad + "' — expected ns/coll")
+        eprintln("machin-365: invalid collection ref '" + bad +
+            "' — expected ns/coll with [a-z0-9_-] segments")
         eprintln(usage)
         return 2
     }

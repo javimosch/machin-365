@@ -99,7 +99,7 @@ func api_put(base, tok, path, body) {
 
 // PUT /v1/store/<ref> declaring the default org-wide policy. Returns true
 // only when the server accepted the declaration. A ref that cannot name a
-// real collection (fails the bkn segment rule — see ref_ok in syncrefs.src)
+// real collection (fails the bkn segment rule — see ref_ok in colls.src)
 // is refused outright: provisioning exists to declare collections sync
 // actually found, and a malformed ref is corruption, not a collection
 // (#109 — phantom discovery refs must never mint server-side rows).
