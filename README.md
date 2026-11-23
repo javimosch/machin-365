@@ -144,15 +144,18 @@ tombstone is deleted on both sides, while a newer `_mtime` (edit after
 delete) wins and the record survives. Legacy tombstones written with a
 bare target `.id` are still honoured and are rewritten to the compound id
 on each sync pass. Apps that skip the tombstone will see deletes
-resurrect — tombstone first, then delete. As a safety net, sync keeps a
-manifest of last-seen local ids per account+endpoint identity
+resurrect — tombstone first, then delete. As a safety net, sync keeps
+manifests of last-seen ids on both sides per account+endpoint identity
 (`sync-manifest.<key>.txt` / `sync-remote-manifest.<key>.txt`, so an
 account/org switch parks the old baseline instead of discarding it) and
 writes the missing tombstone markers itself when a synced record
-vanishes locally — so deletes made through the store API by scripts or
-agents propagate too, with a one-line warning per pass. `service reset`
-clears every identity's manifest so a wiped store is restored from
-remote rather than deleted everywhere.
+vanishes on either side — so deletes made through the store API by
+scripts, agents, or other clients propagate too, with a one-line warning
+per pass. Remote-side detection only fires on a complete, non-empty
+remote fetch, so a wiped/rebuilt remote collection is restored from
+local rather than deleting every device's data. `service reset` clears
+every identity's manifest so a wiped store is restored from remote
+rather than deleted everywhere.
 
 ## Layout
 

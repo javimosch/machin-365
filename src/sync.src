@@ -183,11 +183,16 @@ func sync_one_ref(ref, tm, man, rman) {
     // would read missing records as deletes. rok is captured before the
     // vanished-sync calls: their nested tombstone sync overwrites
     // sync_fetch_ok. The remote listing is org-scoped, so a refused or
-    // partial remote fetch must never read as mass remote deletes.
+    // partial remote fetch must never read as mass remote deletes. A
+    // complete-but-EMPTY remote fetch is just as dangerous: a wiped or
+    // rebuilt remote collection is indistinguishable from every record
+    // being deleted, so remote-side detection also requires a non-empty
+    // rr — the pass then re-pushes the local records and restores the
+    // remote instead of tombstoning every device's copy (#84).
     if lok && ref != sync_tomb_coll {
         tm = tomb_vanished_sync(ref, lr, rr, tm, man, rman)
     }
-    if rok && ref != sync_tomb_coll {
+    if rok && len(rr) > 0 && ref != sync_tomb_coll {
         tm = tomb_remote_vanished_sync(ref, lr, rr, tm, man, rman)
     }
     post := []string{}
