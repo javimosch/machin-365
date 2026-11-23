@@ -2,7 +2,8 @@
 // local bkn and a remote bkn. Records are treated as opaque JSON: we only
 // read .id and ._mtime and re-POST the raw object (POST upserts by id).
 //
-// Conflict policy: last-writer-wins on the _mtime field (ms). Sync stamps
+// Conflict policy: last-writer-wins on the _mtime field — milliseconds
+// since epoch, the unit sync itself writes (now_ms()). Sync stamps
 // _mtime on any doc it writes that lacks one.
 //
 // Deletes DO propagate via tombstones (see tombs.src for the marker
@@ -29,6 +30,11 @@ var sync_local_tok = ""
 // could not reach or was refused by a side must not report success.
 var sync_err_count = 0
 var sync_err_msgs = []string{}
+
+// Fetched records whose _mtime sits in the epoch-seconds band this pass —
+// reported once at the end of sync_pass_once so mixed-unit writers
+// surface instead of diverging silently (#126).
+var sync_mtime_suspect = 0
 
 // Set when a pass found the local endpoint unreachable. Lets a one-shot
 // sync exit non-zero after doing no work, and lets --watch print the
@@ -64,28 +70,62 @@ var sync_rpost_ids = []string{}
 var sync_rpost_mts = make(map[string]int)
 
 // fetch every record of a collection as raw JSON objects, paginated.
-// sync_fetch_ok ends true only when every page arrived — callers that
-// persist or diff the result (the sync manifest) must check it.
-// sync_fetch_absent ends true only when the fetch stopped on the quiet
+// sync_fetch_ok ends true only when every page of EVERY range arrived —
+// callers that persist or diff the result (the sync manifest) must check
+// it. sync_fetch_absent ends true only when the fetch stopped on the quiet
 // private-admin refusal: the collection is confirmed absent for this
 // token, so records missing from the view really are absent *for us*
 // and writes would be refused the same way — the merge may still run.
 // Every other early exit (transport error, non-private status, partial
 // page) leaves the contents unknown: absence in the partial view means
 // nothing and the merge must not run on it (#152).
-// sync/tombstones is fetched with a server-side _mtime floor so markers
-// past the retention window never leave the store (tombs.src): the merge
-// then only ever sees live markers, and expired rows stop costing
-// transfer on every pass. load_tombs applies the same cutoff client-side
-// for stores that ignore the filter.
+// sync/tombstones is fetched with server-side _mtime windows so markers
+// past the retention window never leave the store (tombs.src): live ms
+// markers via ?_mtime=gt:<cutoff>, plus a second range
+// ?_mtime=lt:<mtime_ms_floor> for markers written in epoch SECONDS —
+// they sit below the ms cutoff and would otherwise be invisible to both
+// sides (#126). The ranges are disjoint, so no doc can arrive twice;
+// load_tombs/canon_tombs still apply the cutoff client-side after
+// rec_mtime's seconds→ms scaling, so the wide low range only costs
+// transfer of dormant non-ms markers.
 func fetch_records(base, tok, ref, side) (recs) {
     recs = []string{}
     sync_fetch_ok = true
     sync_fetch_absent = false
+    if ref == sync_tomb_coll {
+        recs = fetch_range(base, tok, ref, side,
+            "&_mtime=gt:" + str(tomb_cutoff()))
+        // A confirmed-absent first range means the collection itself is
+        // refused for this token — the low range would fail the same
+        // way, so don't spend the call.
+        if sync_fetch_absent { return recs }
+        // Anything short of a proven-empty answer leaves the low range's
+        // quiet refusal meaningful: absent is only confirmed when NO
+        // range produced records or completed — a lone low-range refusal
+        // after range 1 answered is contradictory, i.e. unknown state
+        // (#152), not confirmation.
+        proven1 := sync_fetch_ok || len(recs) > 0
+        low := fetch_range(base, tok, ref, side,
+            "&_mtime=lt:" + str(mtime_ms_floor))
+        if proven1 { sync_fetch_absent = false }
+        i := 0
+        while i < len(low) {
+            recs = append(recs, low[i])
+            i = i + 1
+        }
+        return recs
+    }
+    return fetch_range(base, tok, ref, side, "")
+}
+
+// One paginated range of fetch_records; filt is an extra server-side
+// query clause ("" or "&_mtime=..."). Failures clear sync_fetch_ok but
+// never set it — fetch_records owns the flag across its ranges.
+func fetch_range(base, tok, ref, side, filt) (recs) {
+    recs = []string{}
     off := 0
     while true {
-        q := "?limit=500&offset=" + str(off)
-        if ref == sync_tomb_coll { q = q + "&_mtime=gt:" + str(tomb_cutoff()) }
+        q := "?limit=500&offset=" + str(off) + filt
         st, body, err := api_get(base, tok, "/v1/store/" + ref + q)
         if err != "" || st != 200 {
             quiet := false
@@ -117,6 +157,7 @@ func fetch_records(base, tok, ref, side) (recs) {
             r, e := json_get(body, ".records[" + str(i) + "]")
             if e != "" { break }
             recs = append(recs, r)
+            note_mtime_suspect(r)
             i = i + 1
             n = n + 1
         }
@@ -126,12 +167,41 @@ func fetch_records(base, tok, ref, side) (recs) {
     return recs
 }
 
-// mtime of a raw record JSON; 0 when absent/unparseable.
+// _mtime is milliseconds since epoch — the unit sync writes (now_ms())
+// and every comparison assumes. Epoch-SECONDS values (what `date +%s`,
+// time.time() or Math.floor(Date.now()/1000) produce, ~1e9–1e10 today)
+// are ~1000x too small: read literally they lose every LWW/tombstone
+// comparison as "ancient" and fall under tomb_cutoff() so markers look
+// expired (#126). No real ms timestamp sits below mtime_ms_floor
+// (1e11 ms ≈ 1973-03), so a positive value under it is read as seconds
+// and scaled ×1000 — the same instant, in the documented unit. rec_mtime
+// is the single read funnel, so records, tombstones and manifests all
+// compare in ms; the stored doc keeps its original value.
+var mtime_ms_floor = 100000000000
+
+func norm_mtime(mt) {
+    if mt > 0 && mt < mtime_ms_floor { return mt * 1000 }
+    return mt
+}
+
+// mtime of a raw record JSON, normalized to ms; 0 when absent/unparseable.
 func rec_mtime(rec) (mt) {
     mt = 0
     v, e := json_get(rec, "._mtime")
     if e != "" { return mt }
-    return parse_int(trim(v))
+    return norm_mtime(parse_int(trim(v)))
+}
+
+// count records whose _mtime sits in the epoch-seconds band — fetch_range
+// calls this once per fetched doc so the pass can warn about mixed-unit
+// writers instead of silently scaling them forever.
+func note_mtime_suspect(rec) {
+    v, e := json_get(rec, "._mtime")
+    if e != "" { return }
+    mt := parse_int(trim(v))
+    if mt > 0 && mt < mtime_ms_floor {
+        sync_mtime_suspect = sync_mtime_suspect + 1
+    }
 }
 
 func rec_id(rec) {
@@ -390,6 +460,7 @@ func sync_pass_once(refs) {
     sync_err_count = 0
     sync_err_msgs = []string{}
     sync_mtime_clamped = 0
+    sync_mtime_suspect = 0
     sync_remote_auth_err = false
     sync_provision_tried = []string{}
     sync_absent_pass = []string{}
@@ -430,6 +501,12 @@ func sync_pass_once(refs) {
             " doc(s) beyond the +" + str(mtime_skew_ms / 60000) +
             "min skew horizon to now — _mtime is ms since epoch;" +
             " check the writer's clock (#129)")
+    }
+    if sync_mtime_suspect > 0 {
+        perr("machin-365: sync: " + str(sync_mtime_suspect) + " fetched" +
+            " record(s) carry epoch-second-scale _mtime — scaled ×1000" +
+            " to ms on read; _mtime is milliseconds since epoch" +
+            " (see README)")
     }
     if sync_err_count > 0 {
         perr("sync incomplete: " + str(sync_err_count) + " call(s) failed this pass:")

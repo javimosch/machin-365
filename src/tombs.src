@@ -1,8 +1,12 @@
 // tombs.src — delete-marker handling for sync. A deleter POSTs
-// {"ref":"ns/coll","id":"ns/coll|<target>","_mtime":T} to sync/tombstones,
-// then DELETEs the record. The tombstone's own doc id is the compound
-// "ref|id" — a bare target id would let same-id deletes in different
-// collections overwrite each other and resurrect. Legacy tombstones
+// {"ref":"ns/coll","id":"ns/coll|<target>","_mtime":<ms>} to
+// sync/tombstones, then DELETEs the record. _mtime is milliseconds since
+// epoch — the same unit records use (rec_mtime scales epoch-second
+// values ×1000 on read, so a seconds marker still lands inside the
+// live window instead of looking expired, #126). The tombstone's own
+// doc id is the compound "ref|id" — a bare target id would let
+// same-id deletes in different collections overwrite each other and
+// resurrect. Legacy tombstones
 // written with a bare ".id" are still honoured, and each sync pass
 // rewrites them to the compound id.
 //
