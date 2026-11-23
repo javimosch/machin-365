@@ -49,6 +49,24 @@ func usage_fail(msg, usage) {
     eprintln(usage)
 }
 
+// is_help reports an explicit help request. Every command answers it with
+// its usage on stdout and exit 0 — the agent-first discovery surface.
+func is_help(arg) {
+    return arg == "--help" || arg == "-h"
+}
+
+// has_help scans argv a[from:] for a help token. A "--help"/"-h" sitting
+// in flag-value position is indistinguishable from a real request and is
+// treated as one — no legitimate value in this CLI is either token.
+func has_help(a, from) {
+    i := from
+    while i < len(a) {
+        if is_help(a[i]) { return true }
+        i = i + 1
+    }
+    return false
+}
+
 // Parse and validate `sync` flags. Returns the --watch interval in seconds
 // (0 = one-shot), the --collections/--coll value ("" = flag absent), whether
 // the collections flag was given, and a usage-error message ("" = ok).

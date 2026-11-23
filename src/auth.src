@@ -232,10 +232,10 @@ func auth_warn_account_change(prev, server, email, org) {
 
 func cmd_auth_login(a) (code) {
     code = 0
+    if has_help(a, 3) { println(cmd_usage("auth login"))  return code }
     server, email, password, org, name, err_msg := auth_parse_args(a, false)
     if err_msg != "" {
-        usage_fail(err_msg,
-            "usage: machin-365 auth login --server URL --email E --password P [--org SLUG]")
+        usage_fail(err_msg, cmd_usage("auth login"))
         return 2
     }
     if server == "" {
@@ -246,7 +246,7 @@ func cmd_auth_login(a) (code) {
         return 2
     }
     if email == "" || password == "" {
-        eprintln("usage: machin-365 auth login --server URL --email E --password P [--org SLUG]")
+        eprintln(cmd_usage("auth login"))
         return 2
     }
     server = strip_slash(server)
@@ -342,10 +342,10 @@ func default_org_slug(email) {
 // tokens and sync needs the org claim for row-level tenancy.
 func cmd_auth_signup(a) (code) {
     code = 0
+    if has_help(a, 3) { println(cmd_usage("auth signup"))  return code }
     server, email, password, org, name, err_msg := auth_parse_args(a, true)
     if err_msg != "" {
-        usage_fail(err_msg,
-            "usage: machin-365 auth signup --server URL --email E --password P [--name N] [--org SLUG]")
+        usage_fail(err_msg, cmd_usage("auth signup"))
         return 2
     }
     if server == "" { server = load_config().server }
@@ -354,7 +354,7 @@ func cmd_auth_signup(a) (code) {
         return 2
     }
     if email == "" || password == "" {
-        eprintln("usage: machin-365 auth signup --server URL --email E --password P [--name N] [--org SLUG]")
+        eprintln(cmd_usage("auth signup"))
         return 2
     }
     server = strip_slash(server)
