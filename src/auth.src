@@ -161,17 +161,21 @@ func join_strs(list, sep) {
     return out
 }
 
-// cmd_auth_login/signup argv: --server/--email/--password plus --org on
-// both and --name on signup only (with_name). Every flag takes a value in
-// either "--flag value" or "--flag=value" form. Unknown flags, bare
-// positionals and dangling values are usage errors — a mistyped flag must
-// never silently authenticate with a different (or missing) credential.
-func auth_parse_args(a, with_name) (server, email, password, org, name, err_msg) {
+// cmd_auth_login/signup argv: --server/--email plus the password via
+// --password P, --password-stdin, or (on a TTY) an interactive no-echo
+// prompt; --org on both and --name on signup only (with_name). Every flag
+// takes a value in either "--flag value" or "--flag=value" form except
+// --password-stdin, a bare switch. Unknown flags, bare positionals and
+// dangling values are usage errors — a mistyped flag must never silently
+// authenticate with a different (or missing) credential. pw_stdin reports
+// that the password must come from stdin instead of argv.
+func auth_parse_args(a, with_name) (server, email, password, org, name, pw_stdin, err_msg) {
     server = ""
     email = ""
     password = ""
     org = ""
     name = ""
+    pw_stdin = false
     err_msg = ""
     i := 3
     while i < len(a) {
@@ -181,6 +185,19 @@ func auth_parse_args(a, with_name) (server, email, password, org, name, err_msg)
             return
         }
         fname, val, has_eq := flag_eq(arg)
+        if fname == "--password-stdin" {
+            if has_eq {
+                err_msg = "--password-stdin takes no value"
+                return
+            }
+            if password != "" || pw_stdin {
+                err_msg = "pass only one of --password / --password-stdin"
+                return
+            }
+            pw_stdin = true
+            i = i + 1
+            continue
+        }
         known := fname == "--server" || fname == "--email" ||
             fname == "--password" || fname == "--org" ||
             (with_name && fname == "--name")
@@ -195,11 +212,73 @@ func auth_parse_args(a, with_name) (server, email, password, org, name, err_msg)
         }
         if fname == "--server" { server = v }
         else if fname == "--email" { email = v }
-        else if fname == "--password" { password = v }
+        else if fname == "--password" {
+            if pw_stdin {
+                err_msg = "pass only one of --password / --password-stdin"
+                return
+            }
+            password = v
+        }
         else if fname == "--org" { org = v }
         else { name = v }
         i = last + 1
     }
+    return
+}
+
+// No-echo password prompt for `auth login`/`auth signup` — used only when
+// stdin is a TTY (the caller checks). stty -echo suppresses terminal echo
+// for the read and is re-enabled before returning; canonical mode stays
+// on so line editing still works. The Enter ending the line is not echoed,
+// hence the fresh println afterwards.
+func auth_password_prompt() (pw) {
+    pw = ""
+    system("stty -echo")
+    eprint("password: ")
+    pw = trim(input())
+    system("stty echo")
+    println("")
+    return
+}
+
+// Resolve the password for `auth login`/`auth signup` once the other flags
+// are known-good. --password-stdin reads the whole stdin stream and trims
+// it (bkn parity: `echo -n pw |` works); on a TTY it falls through to the
+// no-echo prompt — stdin IS the terminal there, so the prompt is the
+// secure read the flag asks for. With no password flag on a TTY stdin,
+// prompt without echo. --password P still works for scripts, but on a TTY
+// it warns: argv lands in shell history and the process list for the life
+// of the request. err_msg "" = resolved.
+func auth_resolve_password(password, pw_stdin) (pw, err_msg) {
+    pw = ""
+    err_msg = ""
+    tty := system("test -t 0") == 0
+    if pw_stdin {
+        if tty {
+            pw = auth_password_prompt()
+            if pw == "" { err_msg = "empty password" }
+        } else {
+            pw = trim(read_stdin())
+            if pw == "" { err_msg = "--password-stdin produced an empty password" }
+        }
+        return
+    }
+    if password != "" {
+        if tty {
+            eprintln("machin-365: warning: --password exposes the password" +
+                " in shell history and ps — prefer --password-stdin" +
+                " (echo -n pw | …) or omit --password to be prompted")
+        }
+        pw = password
+        return
+    }
+    if tty {
+        pw = auth_password_prompt()
+        if pw == "" { err_msg = "empty password" }
+        return
+    }
+    err_msg = "password required — pass --password P, --password-stdin," +
+        " or run on a terminal to be prompted"
     return
 }
 
@@ -233,7 +312,7 @@ func auth_warn_account_change(prev, server, email, org) {
 func cmd_auth_login(a) (code) {
     code = 0
     if has_help(a, 3) { println(cmd_usage("auth login"))  return code }
-    server, email, password, org, name, err_msg := auth_parse_args(a, false)
+    server, email, password, org, name, pw_stdin, err_msg := auth_parse_args(a, false)
     if err_msg != "" {
         usage_fail(err_msg, cmd_usage("auth login"))
         return 2
@@ -245,8 +324,13 @@ func cmd_auth_login(a) (code) {
         eprintln("machin-365: --server required (e.g. https://bkn.example.com)")
         return 2
     }
-    if email == "" || password == "" {
+    if email == "" {
         eprintln(cmd_usage("auth login"))
+        return 2
+    }
+    password, perr := auth_resolve_password(password, pw_stdin)
+    if perr != "" {
+        usage_fail(perr, cmd_usage("auth login"))
         return 2
     }
     server = strip_slash(server)
@@ -343,7 +427,7 @@ func default_org_slug(email) {
 func cmd_auth_signup(a) (code) {
     code = 0
     if has_help(a, 3) { println(cmd_usage("auth signup"))  return code }
-    server, email, password, org, name, err_msg := auth_parse_args(a, true)
+    server, email, password, org, name, pw_stdin, err_msg := auth_parse_args(a, true)
     if err_msg != "" {
         usage_fail(err_msg, cmd_usage("auth signup"))
         return 2
@@ -353,8 +437,13 @@ func cmd_auth_signup(a) (code) {
         eprintln("machin-365: --server required (e.g. https://bkn.example.com)")
         return 2
     }
-    if email == "" || password == "" {
+    if email == "" {
         eprintln(cmd_usage("auth signup"))
+        return 2
+    }
+    password, perr := auth_resolve_password(password, pw_stdin)
+    if perr != "" {
+        usage_fail(perr, cmd_usage("auth signup"))
         return 2
     }
     server = strip_slash(server)
@@ -430,7 +519,7 @@ func cmd_auth_signup(a) (code) {
 func cmd_auth_status() {
     c := load_config()
     if c.server == "" {
-        println("not configured — run: machin-365 auth login --server URL --email E --password P")
+        println("not configured — run: machin-365 auth login --server URL --email E [--password P | --password-stdin]")
         return
     }
     println("server:  " + c.server)

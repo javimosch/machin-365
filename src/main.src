@@ -52,7 +52,7 @@ func cmd_init() (code) {
     if n > 0 { report_prune(n) }
     println("")
     println("next: machin-365 catalog   — see available apps")
-    println("      machin-365 auth login --server URL --email E --password P")
+    println("      machin-365 auth login --server URL --email E [--password P | --password-stdin]")
     return code
 }
 
