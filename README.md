@@ -112,6 +112,10 @@ build it from the machin-bkn repo (needs the `machin` toolchain).
 
 Replication is one pass per invocation (`--watch N` loops every N seconds),
 last-writer-wins on an app-level `_mtime` field (POST upserts by record id).
+Only one `sync` runs per suite home at a time — a second invocation
+(including a second `--watch`) fails fast with `sync already running
+(pid N)`; the `.sync.lock` dir in the suite home is reclaimed
+automatically when its holder dies.
 `_mtime` is trusted only up to a skew horizon of **15 minutes** past now:
 a stamp beyond that (client clock skew, a unit bug writing µs/ns) is
 rewritten to the current time when sync writes the doc, and reads treat

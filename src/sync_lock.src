@@ -1,0 +1,130 @@
+// sync_lock.src — inter-process exclusion for `sync` (#138).
+//
+// Two sync invocations against one suite home used to run concurrently:
+// both merged data AND both persisted the sync manifests through the
+// same deterministic tmp path (.sync-manifest.<acct>.tmp), so all but
+// one mv failed with a misleading "cannot stat" error — and the data
+// plane (remote GETs/POSTs) interleaved with no guard at all.
+//
+// sync now holds an exclusive lock for its whole run. The lock is a
+// directory, <home>/.sync.lock, claimed with mkdir (the MFL mkdir
+// builtin has mkdir -p semantics and would "succeed" on an existing
+// dir, so the claim goes through system()): atomic, so exactly one
+// process wins. A pid file inside names the holder so a second sync
+// can fail fast with "sync already running (pid N)".
+//
+// A killed sync leaves the dir behind; the pid file is checked with
+// kill -0 (the same liveness test service.src uses for the bkn). A
+// dead pid means the lock is stale: the dir is renamed aside —
+// rename(2) is atomic, so exactly one contender wins the steal — then
+// removed, and the acquire loop retries mkdir. A lock dir whose pid
+// file is not yet readable gets a few seconds of grace: its owner may
+// be between mkdir and write_file. `sync --watch` holds the lock for
+// its whole lifetime; ctrl-c leaves a stale lock the next sync
+// reclaims via the dead-pid path above.
+
+func sync_lock_dir() { return suite_home() + "/.sync.lock" }
+func sync_lock_pidfile() { return sync_lock_dir() + "/pid" }
+
+// pid this process runs as. exec() spawns a shell whose parent is this
+// process, so $PPID is our pid — the same /proc/$PPID/exe trick
+// install.src's self_path() uses.
+func sync_self_pid() {
+    _, out, _ := exec("echo $PPID")
+    return trim(out)
+}
+
+// pid recorded in the lock dir, or 0 when absent/untrustworthy. The
+// str(parse_int(x)) == x round-trip rejects "12abc", "-1" and kindred
+// garbage: a negative pid would make `kill -0` probe a process GROUP
+// (always "alive"), and a non-numeric one an invalid kill target.
+func sync_lock_owner() {
+    o := trim(read_file(sync_lock_pidfile()))
+    if o == "" { return 0 }
+    p := parse_int(o)
+    if p <= 0 || str(p) != o { return 0 }
+    return p
+}
+
+// our pid while we hold the lock; 0 = not held (also the release guard)
+var sync_lock_pid = 0
+
+// Try to claim the sync lock. status 0 = held (sync_lock_pid set),
+// 1 = another LIVE sync holds it (owner = its pid), 2 = could not
+// acquire within the retry budget.
+func sync_lock_acquire() (status, owner) {
+    status = 2
+    owner = 0
+    if !is_dir(suite_home()) {
+        // no home yet — the config checks upstream already failed or
+        // will; don't turn a missing dir into a lock error
+        status = 0
+        return
+    }
+    mypid := parse_int(sync_self_pid())
+    if mypid <= 0 {
+        perr("machin-365: sync: cannot determine own pid —" +
+            " running without inter-process lock")
+        status = 0
+        return
+    }
+    dir := sync_lock_dir()
+    tries := 0
+    while tries < 150 {
+        if system("mkdir " + shell_quote(dir) + " 2>/dev/null") == 0 {
+            write_file(dir + "/pid", str(mypid) + "\n")
+            sync_lock_pid = mypid
+            status = 0
+            owner = 0
+            return
+        }
+        op := sync_lock_owner()
+        if op > 0 {
+            owner = op
+            if pid_alive(str(op)) {
+                status = 1
+                return
+            }
+            // provably dead holder — steal now, no grace needed
+        } else {
+            // no trustworthy owner recorded: either a stale leftover
+            // or an owner still between mkdir and write_file — only a
+            // FRESH dir gets the benefit of the doubt
+            kind, _, mt := stat(dir)
+            if kind == 2 && now() - mt < 5 {
+                sleep(100)
+                tries = tries + 1
+                continue
+            }
+        }
+        // stale lock — rename it aside (atomic: one stealer wins) and
+        // clear it, then loop back to mkdir
+        stale := dir + ".stale." + str(mypid)
+        if system("mv " + shell_quote(dir) + " " +
+            shell_quote(stale) + " 2>/dev/null") == 0 {
+            system("rm -rf " + shell_quote(stale) + " 2>/dev/null")
+        }
+        sleep(50)
+        tries = tries + 1
+    }
+    op := sync_lock_owner()
+    if op > 0 && pid_alive(str(op)) {
+        status = 1
+        owner = op
+    }
+    return
+}
+
+// Drop the lock. Only removes a dir that still records OUR pid — a
+// lock that changed hands belongs to its new owner. rm -rf (not rmdir)
+// so a stray file left by a crashed writer cannot wedge the lock; the
+// path cannot be recreated underneath us because it stays occupied
+// until the final rmdir inside rm.
+func sync_lock_release() {
+    if sync_lock_pid == 0 { return }
+    mine := sync_lock_pid
+    sync_lock_pid = 0
+    if sync_lock_owner() != mine { return }
+    d := sync_lock_dir()
+    system("rm -rf " + shell_quote(d) + " 2>/dev/null")
+}
