@@ -1,0 +1,129 @@
+// mtime.src — _mtime sanity bounds for sync (#129).
+//
+// _mtime is trusted verbatim almost everywhere: a record stamped in the
+// future (client clock skew, a unit bug writing µs/ns — the mirror
+// image of #126's epoch-seconds case) wins every LWW conflict and can
+// never be deleted, because tombstones are stamped at now_ms() and
+// tomb_wins needs marker > record. The delete doesn't just fail — the
+// record resurrects on the next pass when the still-live remote copy is
+// pulled back down.
+//
+// The bound is a skew horizon of now_ms() + mtime_skew_ms (15 min
+// covers NTP correction and minor drift), applied on both sides:
+//
+//   - rec_mtime_b is the READ bound: LWW, tomb_wins and vanished-id
+//     detection compare min(_mtime, horizon), so an unclamped future
+//     stamp degrades to "recent" instead of "eternal".
+//   - stamp is the WRITE bound: any doc sync writes whose _mtime sits
+//     beyond the horizon is rewritten to now_ms() through SQLite's
+//     JSON1 engine (the same trick jstrip uses — MFL has no generic
+//     JSON value). sync_write_rec mirrors the healed doc to the
+//     opposite store so both sides pin the same sane value; without
+//     the mirror the raw stamp would keep winning reads on the store
+//     that was not written.
+//
+// Tombstone markers get a wider WRITE horizon (now + 2*skew): a
+// back-filled marker is stamped at max(now, record_mtime + 1) so it
+// always beats the version it deletes — later legit edits still win
+// under sane clocks — and that value can sit just past the record
+// horizon. Marker READS stay unbounded (load_tombs uses rec_mtime): a
+// marker is only ever written at ~now or ~horizon+1, and bounding it
+// would tie it against the record it must beat.
+
+var mtime_skew_ms = 900000 // 15 min
+
+// Docs whose _mtime stamp() rewrote this pass — reported once at the
+// end of sync_pass_once so poisoned writers surface instead of being
+// silently normalized forever.
+var sync_mtime_clamped = 0
+
+func mtime_horizon() { return now_ms() + mtime_skew_ms }
+
+func mtime_tomb_horizon() { return now_ms() + mtime_skew_ms * 2 }
+
+// write-side horizon for one collection's _mtime stamps.
+func mtime_write_horizon(ref) {
+    if ref == sync_tomb_coll { return mtime_tomb_horizon() }
+    return mtime_horizon()
+}
+
+// rec_mtime bounded to the skew horizon — the value every LWW and
+// tombstone comparison should use for RECORDS. Stored docs are healed
+// on write, so this only bounds unhealed poison (direct store-API
+// writes, pre-fix data); the bound moves with now, which is what lets
+// a fixed tombstone beat the record it deletes on the pass it lands.
+func rec_mtime_bounded(rec) {
+    mt := rec_mtime(rec)
+    h := mtime_horizon()
+    if mt > h { return h }
+    return mt
+}
+
+var mtime_json_db = 0
+
+// Rewrite $._mtime in a raw doc through SQLite's JSON1 engine — MFL has
+// no generic JSON value, so documents are only ever rewritten by JSON1
+// (the same trick scope.src's jstrip uses). Returns rec unchanged when
+// the rewrite cannot run or produce a document.
+func jset_mtime(rec, mt) {
+    if mtime_json_db == 0 { mtime_json_db = sqlite_open(":memory:") }
+    if mtime_json_db == 0 { return rec }
+    rows := sqlite_query(mtime_json_db,
+        "SELECT json_set(?, '$._mtime', CAST(? AS INTEGER)) AS d",
+        []string{rec, str(mt)})
+    if rows == "" || rows == "[]" { return rec }
+    v, e := json_get(rows, "[0].d")
+    if e != "" || len(v) < 2 { return rec }
+    if substr(v, 0, 1) != "\"" { return rec }
+    v = substr(v, 1, len(v) - 1)
+    v = replace(replace(v, "\\\"", "\""), "\\\\", "\\")
+    return v
+}
+
+// ensure _mtime is present and sane: inject now_ms() when absent, and
+// clamp values beyond the collection's write horizon to now_ms() — a
+// poisoned future stamp degrades to "recent" instead of winning LWW
+// and tombstones forever (#129).
+func stamp(rec, ref) {
+    v, e := json_get(rec, "._mtime")
+    if e == "" {
+        mt := parse_int(trim(v))
+        if mt <= mtime_write_horizon(ref) { return rec }
+        sync_mtime_clamped = sync_mtime_clamped + 1
+        return jset_mtime(rec, now_ms())
+    }
+    inner := substr(rec, 0, len(rec)-1)
+    comma := ","
+    if len(inner) <= 1 { comma = "" }
+    return inner + comma + "\"_mtime\":" + str(now_ms()) + "}"
+}
+
+// _mtime the remote record will carry after push_doc: the doc's own
+// when sane, else the now_ms() stamp()/clamp writes — approximated by
+// now_ms() (the inject/clamp runs a few instructions later inside
+// push_doc; ms-level skew is harmless for manifest bookkeeping).
+func push_mtime(rec, ref) {
+    mt := rec_mtime(rec)
+    if mt > 0 && mt <= mtime_write_horizon(ref) { return mt }
+    return now_ms()
+}
+
+// Write one record to a side during the merge, healing _mtime on BOTH
+// stores when stamp() rewrote it: the stamped doc goes to the target
+// side as usual, and — only when the doc actually changed — the same
+// stamped doc is mirrored to the opposite side so the raw future stamp
+// cannot keep winning reads on the store that was not written.
+// Mirroring is safe: it is the same fetched content with a sane
+// _mtime, and both sides then hold identical mtimes so the next pass
+// reads "same" instead of re-fighting the raw stamp.
+func sync_write_rec(ref, rec, to_remote) (ok) {
+    doc := stamp(rec, ref)
+    if to_remote {
+        ok = post_doc(sync_remote, sync_remote_tok, ref, doc, "remote")
+        if doc != rec { post_doc(sync_local, sync_local_tok, ref, doc, "local") }
+    } else {
+        ok = post_doc(sync_local, sync_local_tok, ref, doc, "local")
+        if doc != rec { post_doc(sync_remote, sync_remote_tok, ref, doc, "remote") }
+    }
+    return ok
+}
