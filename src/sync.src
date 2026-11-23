@@ -477,11 +477,27 @@ func cmd_sync(a) (code) {
         return code
     }
 
+    // One sync at a time per suite home (#138): the lock covers the
+    // whole pass — manifest tmp writes AND the remote data plane — so
+    // a concurrent `sync`/`sync --watch` fails fast instead of racing
+    // the deterministic manifest paths. --watch holds it for its whole
+    // lifetime; a one-shot releases it as soon as the pass is done.
+    lst, lowner := sync_lock_acquire()
+    if lst == 1 {
+        eprintln("machin-365: sync already running (pid " + str(lowner) + ")")
+        return 1
+    }
+    if lst != 0 {
+        eprintln("machin-365: could not acquire sync lock")
+        return 1
+    }
+
     if watch > 0 {
         sync_watch(refs, watch, have_coll)
         return code
     }
     sync_pass(refs)
+    sync_lock_release()
     if sync_local_dead || sync_err_count > 0 { return 1 }
     if have_coll { return persist_coll_flag(refs) }
     return code
