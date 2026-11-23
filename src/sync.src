@@ -198,7 +198,7 @@ func sync_one_ref(ref, tm, man, rman) {
         r := lr[j]
         id := rec_id(r)
         if id != "" && tomb_wins(tm, ref, id, rec_mtime_bounded(r)) {
-            if api_delete(sync_local, sync_local_tok, "/v1/store/" + ref + "/" + id, "local") {
+            if api_delete(sync_local, sync_local_tok, ref, id, "local") {
                 deleted = deleted + 1
             }
         }
@@ -216,7 +216,7 @@ func sync_one_ref(ref, tm, man, rman) {
         id := rec_id(r)
         mt := rec_mtime_bounded(r)
         if id != "" && tomb_wins(tm, ref, id, mt) {
-            if api_delete(sync_remote, sync_remote_tok, "/v1/store/" + ref + "/" + id, "remote") {
+            if api_delete(sync_remote, sync_remote_tok, ref, id, "remote") {
                 deleted = deleted + 1
             }
         } else if id != "" {
