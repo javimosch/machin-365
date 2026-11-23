@@ -68,7 +68,7 @@ machin-365 auth signup --server https://machin-bkn.vps1.intrane.fr \
 machin-365 catalog --refresh   # when the server hosts /catalog.json
 machin-365 install tasks
 machin-365 service install   # downloads latest mbkn release, verifies + starts local bkn
-machin-365 sync --collections m365/tasks   # machin-bkn has no /v1/collections route
+machin-365 sync                # discovers collections via GET /v1/collections
 machin-365 run tasks            # add a task, sync, see it on the server
 ```
 
@@ -119,7 +119,8 @@ remembered in `config.json` (`sync_collections`) on first use, and
 `sync` / `sync --watch` keep working without retyping the list. Refs must be
 `ns/coll` — a malformed entry is rejected with exit 2 and never persisted,
 and the list is only saved after a pass completes without call failures.
-With no configured set, sync probes `GET /v1/collections` on both sides.
+With no configured set, sync probes `GET /v1/collections` on both sides;
+`--collections` remains the override for servers without that route.
 
 **Deletes propagate via tombstones**: before deleting a synced doc, the app
 POSTs `{"ref":"ns/coll","id":"ns/coll|<id>","_mtime":T}` to the
