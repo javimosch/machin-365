@@ -112,6 +112,14 @@ build it from the machin-bkn repo (needs the `machin` toolchain).
 
 Replication is one pass per invocation (`--watch N` loops every N seconds),
 last-writer-wins on an app-level `_mtime` field (POST upserts by record id).
+`_mtime` is trusted only up to a skew horizon of **15 minutes** past now:
+a stamp beyond that (client clock skew, a unit bug writing µs/ns) is
+rewritten to the current time when sync writes the doc, and reads treat
+it as the horizon — a poisoned future timestamp degrades to "recent"
+instead of winning every conflict and every tombstone forever. Each pass
+prints a one-line warning when it rewrites stamps, so the bad writer
+surfaces. Tombstone markers get a wider horizon so a back-filled delete
+marker is always stamped just past the record it deletes.
 
 Which collections sync is sticky configuration: `--collections a/b,c/d` is
 remembered in `config.json` (`sync_collections`) on first use, and

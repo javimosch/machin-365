@@ -42,7 +42,7 @@ func sync_prov_gate_for(ref, lr, tm, lok) (g) {
     g = 1
     k := 0
     while k < len(lr) {
-        if !tomb_wins(tm, ref, rec_id(lr[k]), rec_mtime(lr[k])) {
+        if !tomb_wins(tm, ref, rec_id(lr[k]), rec_mtime_bounded(lr[k])) {
             g = 2
             break
         }

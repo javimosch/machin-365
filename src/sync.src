@@ -118,26 +118,6 @@ func rec_mtime(rec) (mt) {
     return parse_int(trim(v))
 }
 
-// _mtime the remote record will carry after push_doc: the doc's own, or
-// the stamp() injection when absent — approximated by now_ms() (the
-// inject runs a few instructions later inside push_doc; ms-level skew
-// is harmless for manifest bookkeeping).
-func push_mtime(rec) {
-    mt := rec_mtime(rec)
-    if mt > 0 { return mt }
-    return now_ms()
-}
-
-// ensure _mtime is present, injecting now_ms() at top level if missing.
-func stamp(rec) {
-    _, e := json_get(rec, "._mtime")
-    if e == "" { return rec }
-    inner := substr(rec, 0, len(rec)-1)
-    comma := ","
-    if len(inner) <= 1 { comma = "" }
-    return inner + comma + "\"_mtime\":" + str(now_ms()) + "}"
-}
-
 func rec_id(rec) {
     v, e := json_get(rec, ".id")
     if e != "" { return "" }
@@ -161,8 +141,7 @@ func find_rec(recs, id) {
     return ""
 }
 
-func push_doc(base, tok, ref, rec, side) {
-    doc := stamp(rec)
+func post_doc(base, tok, ref, doc, side) {
     st, resp, err := api_post(base, tok, "/v1/store/" + ref, doc)
     ok := (st == 200 || st == 201) && err == ""
     if !ok && side == "remote" && is_private_admin_err(st, resp) && remote_provision(ref) {
@@ -171,6 +150,10 @@ func push_doc(base, tok, ref, rec, side) {
     }
     if !ok { sync_note_err(side, "POST /v1/store/" + ref, st, err, resp) }
     return ok
+}
+
+func push_doc(base, tok, ref, rec, side) {
+    return post_doc(base, tok, ref, stamp(rec, ref), side)
 }
 
 // merge one collection both ways. tm maps "ref|id" -> tombstone _mtime;
@@ -214,7 +197,7 @@ func sync_one_ref(ref, tm, man, rman) {
     while j < len(lr) {
         r := lr[j]
         id := rec_id(r)
-        if id != "" && tomb_wins(tm, ref, id, rec_mtime(r)) {
+        if id != "" && tomb_wins(tm, ref, id, rec_mtime_bounded(r)) {
             if api_delete(sync_local, sync_local_tok, "/v1/store/" + ref + "/" + id, "local") {
                 deleted = deleted + 1
             }
@@ -231,7 +214,7 @@ func sync_one_ref(ref, tm, man, rman) {
     while j < len(rr) {
         r := rr[j]
         id := rec_id(r)
-        mt := rec_mtime(r)
+        mt := rec_mtime_bounded(r)
         if id != "" && tomb_wins(tm, ref, id, mt) {
             if api_delete(sync_remote, sync_remote_tok, "/v1/store/" + ref + "/" + id, "remote") {
                 deleted = deleted + 1
@@ -248,32 +231,32 @@ func sync_one_ref(ref, tm, man, rman) {
     while j < len(lr) {
         lrec := lr[j]
         id := rec_id(lrec)
-        lm := rec_mtime(lrec)
+        lm := rec_mtime_bounded(lrec)
         ldead := tomb_wins(tm, ref, id, lm)
         rrec := find_rec(rr, id)
-        rdead := rrec != "" && tomb_wins(tm, ref, id, rec_mtime(rrec))
+        rdead := rrec != "" && tomb_wins(tm, ref, id, rec_mtime_bounded(rrec))
         if !ldead {
             if id != "" { post = append(post, id) }
             if rrec == "" || rdead {
                 // local-only (or remote copy dead) → push
-                if push_doc(sync_remote, sync_remote_tok, ref, lrec, "remote") {
+                if sync_write_rec(ref, lrec, true) {
                     pushed = pushed + 1
                     if id != "" {
                         rpost = append(rpost, id)
-                        rpost_mt[id] = push_mtime(lrec)
+                        rpost_mt[id] = push_mtime(lrec, ref)
                     }
                 }
             } else {
-                rm := rec_mtime(rrec)
+                rm := rec_mtime_bounded(rrec)
                 if lm > rm {
-                    if push_doc(sync_remote, sync_remote_tok, ref, lrec, "remote") {
+                    if sync_write_rec(ref, lrec, true) {
                         pushed = pushed + 1
                         // the remote now holds the newer local doc —
                         // refresh the mtime pre-delete recorded
-                        if id != "" { rpost_mt[id] = push_mtime(lrec) }
+                        if id != "" { rpost_mt[id] = push_mtime(lrec, ref) }
                     }
                 } else if rm > lm {
-                    if push_doc(sync_local, sync_local_tok, ref, rrec, "local") { pulled = pulled + 1 }
+                    if sync_write_rec(ref, rrec, false) { pulled = pulled + 1 }
                 } else {
                     same = same + 1
                 }
@@ -286,11 +269,11 @@ func sync_one_ref(ref, tm, man, rman) {
     while j < len(rr) {
         rrec := rr[j]
         id := rec_id(rrec)
-        if !tomb_wins(tm, ref, id, rec_mtime(rrec)) {
+        if !tomb_wins(tm, ref, id, rec_mtime_bounded(rrec)) {
             lrec := find_rec(lr, id)
-            lhas := lrec != "" && !tomb_wins(tm, ref, id, rec_mtime(lrec))
+            lhas := lrec != "" && !tomb_wins(tm, ref, id, rec_mtime_bounded(lrec))
             if !lhas {
-                if push_doc(sync_local, sync_local_tok, ref, rrec, "local") {
+                if sync_write_rec(ref, rrec, false) {
                     pulled = pulled + 1
                     if id != "" { post = append(post, id) }
                 }
@@ -360,6 +343,7 @@ func sync_maybe_refresh() {
 func sync_pass_once(refs) {
     sync_err_count = 0
     sync_err_msgs = []string{}
+    sync_mtime_clamped = 0
     sync_remote_auth_err = false
     sync_provision_tried = []string{}
     if !local_alive() {
@@ -394,6 +378,12 @@ func sync_pass_once(refs) {
     }
     save_manifest(man_new, ckey, refs)
     save_remote_manifest(rman_new, rkey, refs)
+    if sync_mtime_clamped > 0 {
+        perr("machin-365: sync: rewrote _mtime on " + str(sync_mtime_clamped) +
+            " doc(s) beyond the +" + str(mtime_skew_ms / 60000) +
+            "min skew horizon to now — _mtime is ms since epoch;" +
+            " check the writer's clock (#129)")
+    }
     if sync_err_count > 0 {
         perr("sync incomplete: " + str(sync_err_count) + " call(s) failed this pass:")
         j := 0

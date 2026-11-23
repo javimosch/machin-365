@@ -103,11 +103,15 @@ func canon_tombs(base, tok, side) {
 // record's _mtime, so an existing-but-older marker (edit-after-delete)
 // still needs a fresh one. No baseline for ref (first sync, new
 // collection, reset manifest) returns empty — an empty baseline must
-// never tombstone anything.
-func tomb_missing_ids(ref, lr, rr, tm, man) (ids) {
+// never tombstone anything. tmts carries each id's remote-copy mtime
+// (bounded) so the marker can be stamped just past it — a delete must
+// always beat the version it deletes, even when that version carries a
+// future-dated _mtime (#129).
+func tomb_missing_ids(ref, lr, rr, tm, man) (ids, tmts) {
     ids = []string{}
+    tmts = make(map[string]int)
     blob := man[ref]
-    if blob == "" { return ids }
+    if blob == "" { return ids, tmts }
     cur := make(map[string]int)
     i := 0
     while i < len(lr) {
@@ -122,24 +126,31 @@ func tomb_missing_ids(ref, lr, rr, tm, man) (ids) {
         if cur[id] == 0 {
             rmt := 0
             rrec := find_rec(rr, id)
-            if rrec != "" { rmt = rec_mtime(rrec) }
+            if rrec != "" { rmt = rec_mtime_bounded(rrec) }
             if tm[ref + "|" + id] <= rmt {
                 ids = append(ids, id)
+                tmts[id] = rmt
             }
         }
         i = i + 1
     }
-    return ids
+    return ids, tmts
 }
 
 // POST a sync/tombstones marker for each vanished id — the same doc shape
 // apps write ({"ref","id":"ref|id","_mtime"}), so canon_tombs and
-// load_tombs treat them identically. Returns how many were accepted.
-func tomb_write_markers(ref, ids) (w) {
+// load_tombs treat them identically. Each marker is stamped at
+// max(now, the deleted copy's bounded _mtime + 1): a future-dated record
+// would otherwise out-live its own delete marker forever (#129), while
+// later legit edits still win because their _mtime exceeds the marker
+// under sane clocks. Returns how many were accepted.
+func tomb_write_markers(ref, ids, tmts) (w) {
     w = 0
-    mt := now_ms()
+    now := now_ms()
     i := 0
     while i < len(ids) {
+        mt := now
+        if tmts[ids[i]] + 1 > mt { mt = tmts[ids[i]] + 1 }
         doc := "{\"ref\":" + json(ref) + ",\"id\":" + json(ref + "|" + ids[i]) +
             ",\"_mtime\":" + str(mt) + "}"
         if push_doc(sync_local, sync_local_tok, sync_tomb_coll, doc, "local") {
@@ -158,9 +169,9 @@ func tomb_write_markers(ref, ids) (w) {
 // was written (no baseline, no vanished ids, or every marker POST failed).
 func tomb_vanished_sync(ref, lr, rr, tm, man, rman) (ntm) {
     ntm = tm
-    need := tomb_missing_ids(ref, lr, rr, tm, man)
+    need, need_mts := tomb_missing_ids(ref, lr, rr, tm, man)
     if len(need) == 0 { return ntm }
-    w := tomb_write_markers(ref, need)
+    w := tomb_write_markers(ref, need, need_mts)
     if w == 0 { return ntm }
     empty := make(map[string]int)
     sync_one_ref(sync_tomb_coll, empty, man, rman)
@@ -190,11 +201,15 @@ func tomb_vanished_sync(ref, lr, rr, tm, man, rman) (ntm) {
 // remote fetch: the remote listing is org-scoped, so a partial page or
 // a failed fetch would read still-present records as remote deletes.
 // No baseline for ref returns empty — an empty baseline must never
-// tombstone anything.
-func remote_missing_ids(ref, lr, rr, tm, rman) (ids) {
+// tombstone anything. tmts carries each id's LOCAL-copy mtime (bounded)
+// so the marker can be stamped just past it — the local copy is the one
+// the pre-delete pass must kill, and a future-dated _mtime would
+// otherwise out-live its own marker (#129).
+func remote_missing_ids(ref, lr, rr, tm, rman) (ids, tmts) {
     ids = []string{}
+    tmts = make(map[string]int)
     blob := rman[ref]
-    if blob == "" { return ids }
+    if blob == "" { return ids, tmts }
     cur := make(map[string]int)
     i := 0
     while i < len(rr) {
@@ -209,15 +224,17 @@ func remote_missing_ids(ref, lr, rr, tm, rman) (ids) {
         if cur[id] == 0 {
             lrec := find_rec(lr, id)
             if lrec != "" {
+                lmt := rec_mtime_bounded(lrec)
                 tmt := tm[ref + "|" + id]
                 if tmt == 0 || mts[id] >= tmt {
                     ids = append(ids, id)
+                    tmts[id] = lmt
                 }
             }
         }
         i = i + 1
     }
-    return ids
+    return ids, tmts
 }
 
 // Remote-side mirror of tomb_vanished_sync. Markers are written to the
@@ -229,9 +246,9 @@ func remote_missing_ids(ref, lr, rr, tm, rman) (ids) {
 // nothing was written.
 func tomb_remote_vanished_sync(ref, lr, rr, tm, man, rman) (ntm) {
     ntm = tm
-    need := remote_missing_ids(ref, lr, rr, tm, rman)
+    need, need_mts := remote_missing_ids(ref, lr, rr, tm, rman)
     if len(need) == 0 { return ntm }
-    w := tomb_write_markers(ref, need)
+    w := tomb_write_markers(ref, need, need_mts)
     if w == 0 { return ntm }
     empty := make(map[string]int)
     sync_one_ref(sync_tomb_coll, empty, man, rman)
