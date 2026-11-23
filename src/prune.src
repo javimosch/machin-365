@@ -149,8 +149,9 @@ func report_prune(n) {
 
 func cmd_prune(a) (code) {
     code = 0
+    if has_help(a, 2) { println(cmd_usage("prune"))  return code }
     if len(a) > 2 {
-        usage_fail("unexpected argument '" + a[2] + "'", "usage: machin-365 prune")
+        usage_fail("unexpected argument '" + a[2] + "'", cmd_usage("prune"))
         return 2
     }
     n := prune_desktops()

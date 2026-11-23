@@ -365,13 +365,14 @@ func install_parse_args(a) (id, binpath, err_msg) {
 
 func cmd_install(a) (code) {
     code = 0
+    if has_help(a, 2) { println(cmd_usage("install"))  return code }
     id, binpath, err_msg := install_parse_args(a)
     if err_msg != "" {
-        usage_fail(err_msg, "usage: machin-365 install <app-id> [--bin /path/to/binary]")
+        usage_fail(err_msg, cmd_usage("install"))
         return 2
     }
     if id == "" {
-        eprintln("usage: machin-365 install <app-id> [--bin /path/to/binary]")
+        eprintln(cmd_usage("install"))
         return 2
     }
     cat := load_catalog()
@@ -419,6 +420,9 @@ func shell_quote(s) {
 
 func cmd_run(a) (code) {
     code = 0
+    // Only argv[2] is ours — everything after <app-id> passes through to
+    // the app, so `run myapp --help` must reach the app, not this usage.
+    if len(a) > 2 && is_help(a[2]) { println(cmd_usage("run"))  return code }
     id := ""
     i := 2
     while i < len(a) {
@@ -426,7 +430,7 @@ func cmd_run(a) (code) {
         i = i + 1
     }
     if id == "" {
-        eprintln("usage: machin-365 run <app-id> [args...]")
+        eprintln(cmd_usage("run"))
         return 2
     }
     r := load_registry()
@@ -490,6 +494,7 @@ func catalog_refresh() (code) {
 
 func cmd_catalog(a) (code) {
     code = 0
+    if has_help(a, 2) { println(cmd_usage("catalog"))  return code }
     refresh := false
     ai := 2
     while ai < len(a) {
@@ -497,10 +502,10 @@ func cmd_catalog(a) (code) {
         if arg == "--refresh" {
             refresh = true
         } else if has_prefix(arg, "--") {
-            usage_fail("unknown flag '" + arg + "'", "usage: machin-365 catalog [--refresh]")
+            usage_fail("unknown flag '" + arg + "'", cmd_usage("catalog"))
             return 2
         } else {
-            usage_fail("unexpected argument '" + arg + "'", "usage: machin-365 catalog [--refresh]")
+            usage_fail("unexpected argument '" + arg + "'", cmd_usage("catalog"))
             return 2
         }
         ai = ai + 1

@@ -86,7 +86,8 @@ func persist_coll_arg(refs) {
 // /v1/collections probe.
 func cmd_config_set(a) (code) {
     code = 0
-    usage := "usage: machin-365 config set sync_collections a/b,c/d"
+    usage := cmd_usage("config set")
+    if has_help(a, 3) { println(usage)  return code }
     if len(a) < 5 {
         eprintln(usage)
         return 2

@@ -42,3 +42,41 @@ func print_usage() {
     println("server configured via `auth login`. Local data created before")
     println("the first sign-in is adopted into that account's store.")
 }
+
+// cmd_usage returns the usage line for a command path ("sync",
+// "auth login", "service reset", ...); "" for unknown paths. It is the
+// single source for error diagnostics AND the --help/-h / `help <cmd>`
+// success paths, so the two can never drift apart.
+func cmd_usage(path) (s) {
+    s = ""
+    if path == "init" { s = "usage: machin-365 init"  return }
+    if path == "catalog" || path == "apps" { s = "usage: machin-365 catalog [--refresh]"  return }
+    if path == "install" { s = "usage: machin-365 install <app-id> [--bin /path/to/binary]"  return }
+    if path == "uninstall" { s = "usage: machin-365 uninstall <app-id>"  return }
+    if path == "prune" { s = "usage: machin-365 prune"  return }
+    if path == "run" { s = "usage: machin-365 run <app-id> [args...]"  return }
+    if path == "sync" { s = "usage: machin-365 sync [--collections a/b,c/d] [--watch [secs]]"  return }
+    if path == "config" { s = "usage: machin-365 config [set sync_collections a/b,c/d]"  return }
+    if path == "config set" { s = "usage: machin-365 config set sync_collections a/b,c/d"  return }
+    if path == "auth" { s = "usage: machin-365 auth <login|signup|member|memberships|orgs|org|switch-org|status|logout>"  return }
+    if path == "auth login" { s = "usage: machin-365 auth login --server URL --email E --password P [--org SLUG]"  return }
+    if path == "auth signup" { s = "usage: machin-365 auth signup --server URL --email E --password P [--name N] [--org SLUG]"  return }
+    if path == "auth member" { s = "usage: machin-365 auth member <add|list|remove> ..."  return }
+    if path == "auth member add" { s = "usage: machin-365 auth member add <org> <user> [--role owner|admin|member]"  return }
+    if path == "auth member list" { s = "usage: machin-365 auth member list <org>"  return }
+    if path == "auth member remove" { s = "usage: machin-365 auth member remove <org> <user>"  return }
+    if path == "auth memberships" { s = "usage: machin-365 auth memberships"  return }
+    if path == "auth orgs" { s = "usage: machin-365 auth orgs"  return }
+    if path == "auth org" { s = "usage: machin-365 auth org <create> ..."  return }
+    if path == "auth org create" { s = "usage: machin-365 auth org create <slug> [--name N]"  return }
+    if path == "auth switch-org" { s = "usage: machin-365 auth switch-org <slug>"  return }
+    if path == "auth status" { s = "usage: machin-365 auth status"  return }
+    if path == "auth logout" { s = "usage: machin-365 auth logout"  return }
+    if path == "service" { s = "usage: machin-365 service <install|start|stop|status|reset>"  return }
+    if path == "service install" { s = "usage: machin-365 service install [--bin /path/to/bkn]"  return }
+    if path == "service start" { s = "usage: machin-365 service start"  return }
+    if path == "service stop" { s = "usage: machin-365 service stop"  return }
+    if path == "service status" { s = "usage: machin-365 service status"  return }
+    if path == "service reset" { s = "usage: machin-365 service reset [--yes]"  return }
+    return
+}

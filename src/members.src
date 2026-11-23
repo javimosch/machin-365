@@ -1,0 +1,160 @@
+// members.src — org member management, split from orgs.src to keep files
+// under the 500-line convention. Shares auth_api/auth_need_login/
+// parse_member_rows/OrgMembership with orgs.src (same concatenated unit).
+//
+//   auth member add <org> <user> [--role owner|admin|member]
+//   auth member list <org>
+//   auth member remove <org> <user>
+
+func cmd_auth_member(a) (code) {
+    code = 0
+    if len(a) < 4 {
+        eprintln(cmd_usage("auth member"))
+        return 2
+    }
+    act := a[3]
+    if is_help(act) { println(cmd_usage("auth member"))  return code }
+    if act == "add" { return cmd_member_add(a) }
+    if act == "list" { return cmd_member_list(a) }
+    if act == "remove" { return cmd_member_remove(a) }
+    usage_fail("unknown member action '" + act + "'", cmd_usage("auth member"))
+    return 2
+}
+
+// `member add <org> <user> [--role R]` — the caller must be owner/admin of
+// <org> (the server checks the DB membership, not the token's org claim,
+// so the stored token may be scoped to a different org).
+func cmd_member_add(a) (code) {
+    code = 0
+    usage := cmd_usage("auth member add")
+    if has_help(a, 4) { println(usage)  return code }
+    if len(a) < 6 {
+        eprintln(usage)
+        return 2
+    }
+    org := a[4]
+    user := a[5]
+    role := "member"
+    i := 6
+    while i < len(a) {
+        arg := a[i]
+        if !has_prefix(arg, "--") {
+            usage_fail("unexpected argument '" + arg + "'", usage)
+            return 2
+        }
+        fname, val, has_eq := flag_eq(arg)
+        if fname != "--role" {
+            usage_fail("unknown flag '" + arg + "'", usage)
+            return 2
+        }
+        v, last, ok := flag_value(a, i, val, has_eq)
+        if !ok {
+            usage_fail(fname + " requires a value", usage)
+            return 2
+        }
+        role = v
+        i = last + 1
+    }
+    if role != "owner" && role != "admin" && role != "member" {
+        usage_fail("role must be one of: owner, admin, member", usage)
+        return 2
+    }
+    msg := auth_need_login()
+    if msg != "" {
+        eprintln("machin-365: " + msg)
+        return 1
+    }
+    body := "{\"user\":" + json(user) + ",\"role\":" + json(role) + "}"
+    st, resp, err := auth_api("POST", "/v1/auth/orgs/" + org + "/members", body)
+    if err != "" {
+        eprintln("machin-365: member add failed: " + err)
+        return 1
+    }
+    if st != 200 && st != 201 {
+        eprintln("machin-365: member add failed: " + auth_errnote(st, resp))
+        return 1
+    }
+    em_r, _ := json_get(resp, ".membership.user_email")
+    rl_r, _ := json_get(resp, ".membership.role")
+    em := parse(em_r, "")
+    if em == "" { em = user }
+    rl := parse(rl_r, "")
+    if rl == "" { rl = role }
+    println("added " + em + " to " + org + " as " + rl)
+    return code
+}
+
+func cmd_member_list(a) (code) {
+    code = 0
+    usage := cmd_usage("auth member list")
+    if has_help(a, 4) { println(usage)  return code }
+    if len(a) < 5 {
+        eprintln(usage)
+        return 2
+    }
+    if len(a) > 5 {
+        usage_fail("unexpected argument '" + a[5] + "'", usage)
+        return 2
+    }
+    org := a[4]
+    msg := auth_need_login()
+    if msg != "" {
+        eprintln("machin-365: " + msg)
+        return 1
+    }
+    st, resp, err := auth_api("GET", "/v1/auth/orgs/" + org + "/members", "")
+    if err != "" {
+        eprintln("machin-365: member list failed: " + err)
+        return 1
+    }
+    if st != 200 {
+        eprintln("machin-365: member list failed: " + auth_errnote(st, resp))
+        return 1
+    }
+    ms := parse_member_rows(resp, "members")
+    if len(ms) == 0 {
+        println("no members")
+        return code
+    }
+    i := 0
+    while i < len(ms) {
+        println(ms[i].user_email + "  " + ms[i].role)
+        i = i + 1
+    }
+    return code
+}
+
+// `member remove <org> <user>` — <user> is an email or user id and goes
+// into the path RAW: bkn does not percent-decode path segments, so an
+// encoded "@" would arrive literally and match no user.
+func cmd_member_remove(a) (code) {
+    code = 0
+    usage := cmd_usage("auth member remove")
+    if has_help(a, 4) { println(usage)  return code }
+    if len(a) < 6 {
+        eprintln(usage)
+        return 2
+    }
+    if len(a) > 6 {
+        usage_fail("unexpected argument '" + a[6] + "'", usage)
+        return 2
+    }
+    org := a[4]
+    user := a[5]
+    msg := auth_need_login()
+    if msg != "" {
+        eprintln("machin-365: " + msg)
+        return 1
+    }
+    st, resp, err := auth_api("DELETE", "/v1/auth/orgs/" + org + "/members/" + user, "")
+    if err != "" {
+        eprintln("machin-365: member remove failed: " + err)
+        return 1
+    }
+    if st != 200 && st != 204 {
+        eprintln("machin-365: member remove failed: " + auth_errnote(st, resp))
+        return 1
+    }
+    println("removed " + user + " from " + org)
+    return code
+}

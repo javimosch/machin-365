@@ -426,10 +426,11 @@ func sync_pass(refs) {
 func cmd_sync(a) (code) {
     code = 0
 
+    if has_help(a, 2) { println(cmd_usage("sync"))  return code }
     watch, coll_arg, have_coll, err_msg := sync_parse_args(a)
     if err_msg != "" {
         eprintln("machin-365: " + err_msg)
-        eprintln("usage: machin-365 sync [--collections a/b,c/d] [--watch [secs]]")
+        eprintln(cmd_usage("sync"))
         return 2
     }
 
