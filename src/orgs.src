@@ -53,7 +53,7 @@ func auth_need_login() (msg) {
     msg = ""
     c := load_config()
     if c.server == "" {
-        msg = "not configured — run: auth login --server URL --email E --password P"
+        msg = "not configured — run: auth login --server URL --email E [--password P | --password-stdin]"
         return
     }
     if c.token == "" {
@@ -301,7 +301,7 @@ func cmd_auth_switch_org(a) (code) {
     }
     c := load_config()
     if c.server == "" {
-        eprintln("machin-365: not configured — run: auth login --server URL --email E --password P")
+        eprintln("machin-365: not configured — run: auth login --server URL --email E [--password P | --password-stdin]")
         return 1
     }
     if c.refresh_token == "" {

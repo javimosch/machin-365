@@ -37,8 +37,8 @@ machin-365 install tasks --bin ./build/machin-tasks   # local build
 machin-365 uninstall tasks          # remove app; data/tasks/ is kept
 machin-365 prune                     # drop .desktop entries whose home/binary is gone
 machin-365 run tasks                # launch (also in your OS app menu)
-machin-365 auth login --server URL --email E --password P [--org SLUG]
-machin-365 auth signup --server URL --email E --password P [--name N] [--org SLUG]
+machin-365 auth login --server URL --email E [--password P | --password-stdin] [--org SLUG]
+machin-365 auth signup --server URL --email E [--password P | --password-stdin] [--name N] [--org SLUG]
 machin-365 auth memberships | orgs       # orgs the account belongs to
 machin-365 auth org create <slug> [--name N]   # create an org (creator becomes owner)
 machin-365 auth member add <org> <user> [--role owner|admin|member]
@@ -64,7 +64,7 @@ other's data. Try the whole flow:
 
 ```sh
 machin-365 auth signup --server https://machin-bkn.vps1.intrane.fr \
-    --email you@example.com --password a-good-password
+    --email you@example.com    # password: no-echo prompt (or --password-stdin)
 machin-365 catalog --refresh   # when the server hosts /catalog.json
 machin-365 install tasks
 machin-365 service install   # downloads latest mbkn release, verifies + starts local bkn
@@ -73,7 +73,12 @@ machin-365 run tasks            # add a task, sync, see it on the server
 ```
 
 `auth signup` registers the account, creates a personal org (you become
-owner), and logs in with org-scoped tokens. Tenancy is enforced server-side:
+owner), and logs in with org-scoped tokens. The password never has to sit
+in argv: omit `--password` on a terminal and you get a no-echo prompt;
+scripts pipe it instead — `echo -n "$PW" | machin-365 auth login ...
+--password-stdin` (same flag on `signup`, matching bkn's auth commands).
+`--password P` still works for scripts, but on a terminal the CLI warns
+that argv lands in shell history and `ps`. Tenancy is enforced server-side:
 the bkn `org` access policy stamps and filters rows by the caller's org, so
 sync needs no per-user configuration — each account only ever sees its own
 collections' rows. A shared throwaway demo login also exists

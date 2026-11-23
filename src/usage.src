@@ -13,8 +13,8 @@ func print_usage() {
     println("  uninstall <id>                 remove an installed app (keeps data/<id>/)")
     println("  prune                         drop .desktop entries whose home/binary is gone")
     println("  run <id> [args...]            run an installed app")
-    println("  auth login --server URL --email E --password P [--org SLUG]")
-    println("  auth signup --server URL --email E --password P [--name N] [--org SLUG]")
+    println("  auth login --server URL --email E [--password P | --password-stdin] [--org SLUG]")
+    println("  auth signup --server URL --email E [--password P | --password-stdin] [--name N] [--org SLUG]")
     println("  auth member add <org> <user> [--role owner|admin|member]   add a member to an org")
     println("  auth member list <org>          list an org's members")
     println("  auth member remove <org> <user> remove a member from an org")
@@ -59,8 +59,8 @@ func cmd_usage(path) (s) {
     if path == "config" { s = "usage: machin-365 config [set sync_collections a/b,c/d]"  return }
     if path == "config set" { s = "usage: machin-365 config set sync_collections a/b,c/d"  return }
     if path == "auth" { s = "usage: machin-365 auth <login|signup|member|memberships|orgs|org|switch-org|status|logout>"  return }
-    if path == "auth login" { s = "usage: machin-365 auth login --server URL --email E --password P [--org SLUG]"  return }
-    if path == "auth signup" { s = "usage: machin-365 auth signup --server URL --email E --password P [--name N] [--org SLUG]"  return }
+    if path == "auth login" { s = "usage: machin-365 auth login --server URL --email E [--password P | --password-stdin] [--org SLUG]"  return }
+    if path == "auth signup" { s = "usage: machin-365 auth signup --server URL --email E [--password P | --password-stdin] [--name N] [--org SLUG]"  return }
     if path == "auth member" { s = "usage: machin-365 auth member <add|list|remove> ..."  return }
     if path == "auth member add" { s = "usage: machin-365 auth member add <org> <user> [--role owner|admin|member]"  return }
     if path == "auth member list" { s = "usage: machin-365 auth member list <org>"  return }
