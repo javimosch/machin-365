@@ -1,7 +1,7 @@
 #!/bin/sh
 # install.sh — one-line installer for machin-365.
 #
-#   curl -fsSL https://raw.githubusercontent.com/javimosch/machin-365/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/javimosch/machin-365/HEAD/install.sh | sh
 #
 # Downloads the latest GitHub release binary for this platform into
 # ~/.local/bin/machin-365 (override with MACHIN_365_BIN_DIR).
