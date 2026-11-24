@@ -1,0 +1,205 @@
+// update.src — `machin-365 update`: self-update from the GitHub release
+// channel. install.sh is the front door, but once installed there was no
+// way to discover or close the gap when a newer release ships — the suite
+// version stamp (#146) made "what is running?" answerable; this makes
+// "get the latest" actionable. The flow mirrors `service install
+// --latest`: query the latest release, pick this platform's asset,
+// verify the published SHA256SUMS.txt (asset digest as fallback), smoke
+// the staged binary, then atomically rename it over the running one —
+// a failed check leaves the installed binary untouched.
+
+// m365_pick_asset selects this platform's binary out of a release's
+// assets: the release.yml contract names them machin-365-<plat> with a
+// SHA256SUMS.txt alongside. Returns the asset name, download URL, the
+// API-recorded digest and the sums URL ("" when absent).
+func m365_pick_asset(rel, plat) (aname, aurl, adigest, sumsurl) {
+    aname = ""
+    aurl = ""
+    adigest = ""
+    sumsurl = ""
+    want := "machin-365-" + plat
+    i := 0
+    while i < len(rel.assets) {
+        a := rel.assets[i]
+        if a.name == "SHA256SUMS.txt" { sumsurl = a.browser_download_url }
+        if a.name == want {
+            aname = a.name
+            aurl = a.browser_download_url
+            adigest = a.digest
+        }
+        i = i + 1
+    }
+    return
+}
+
+// ver_core reduces a version stamp to its dotted numeric core:
+// "v0.3.0-5-gabc123" -> "0.3.0", "v0.3.0" -> "0.3.0", "1.2" -> "1.2".
+// Anything past the first '-' (git-describe commit count, -dirty) and
+// any non [0-9.] tail is dropped — pre-release suffixes like "-rc1"
+// compare as their base version, which is the conservative direction
+// (a rc of a newer version still reads older than the release).
+func ver_core(v) {
+    d := index(v, "-")
+    if d >= 0 { v = substr(v, 0, d) }
+    if has_prefix(v, "v") || has_prefix(v, "V") { v = substr(v, 1, len(v)) }
+    out := ""
+    i := 0
+    while i < len(v) {
+        ch := substr(v, i, i + 1)
+        if contains("0123456789.", ch) {
+            out = out + ch
+        } else {
+            return out
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// ver_cmp compares two version stamps by numeric dotted components:
+// -1 when a < b, 0 when equal, 1 when a > b. Missing components count
+// as 0, so "0.3" equals "0.3.0".
+func ver_cmp(a, b) {
+    ca := split(ver_core(a), ".")
+    cb := split(ver_core(b), ".")
+    n := len(ca)
+    if len(cb) > n { n = len(cb) }
+    i := 0
+    while i < n {
+        va := 0
+        vb := 0
+        if i < len(ca) { va = parse_int(ca[i]) }
+        if i < len(cb) { vb = parse_int(cb[i]) }
+        if va < vb { return -1 }
+        if va > vb { return 1 }
+        i = i + 1
+    }
+    return 0
+}
+
+// ver_past_tag reports whether a version stamp sits AHEAD of the release
+// it names: "v0.3.0-5-gabc" is five commits past v0.3.0, "v0.3.0-dirty"
+// a dirty tree on it. Both must not be "updated" onto the release —
+// that would be a downgrade. Only a numeric lead after '-' counts;
+// suffixes like "-rc1" don't (ver_core already folds them into the base).
+func ver_past_tag(v) {
+    d := index(v, "-")
+    if d < 0 { return false }
+    return parse_int(substr(v, d + 1, len(v))) > 0
+}
+
+func cmd_update() (code) {
+    code = 0
+    self := self_path()
+    if index(self, "/") < 0 {
+        eprintln("machin-365: cannot resolve the running binary's path — " +
+            "update needs an installed file, not a bare command name")
+        return 1
+    }
+    plat := platform()
+    st, body, err := http_request("GET",
+        "https://api.github.com/repos/javimosch/machin-365/releases/latest",
+        []string{"User-Agent: machin-365", "Accept: application/vnd.github+json"}, "")
+    if err != "" || st != 200 {
+        eprintln("machin-365: cannot query machin-365 releases: " +
+            http_errnote(st, err, body))
+        return 1
+    }
+    rel := parse(body, GhRelease{})
+    if rel.tag_name == "" || len(rel.assets) == 0 {
+        eprintln("machin-365: release metadata unreadable")
+        return 1
+    }
+    aname, aurl, adigest, sumsurl := m365_pick_asset(rel, plat)
+    if aname == "" {
+        if has_prefix(plat, "darwin") {
+            eprintln("machin-365: no darwin release assets published yet — " +
+                "build from source: git clone https://github.com/javimosch/machin-365 && ./build.sh")
+        } else {
+            eprintln("machin-365: no machin-365 release asset for " + plat +
+                " in " + rel.tag_name)
+        }
+        return 1
+    }
+    // Stage beside the target: the final step is a rename, which must be
+    // same-filesystem to stay atomic — and this directory is the one the
+    // swap needs write access to anyway.
+    _, sd, _ := exec("dirname " + shell_quote(self))
+    sd = trim(sd)
+    if sd == "" { sd = "." }
+    tmp := sd + "/.machin-365.update"
+    sp := sd + "/.machin-365.sums"
+    expected := ""
+    if sumsurl != "" {
+        dc, _, _ := exec("curl -fsSL '" + sumsurl + "' -o '" + sp + "'")
+        if dc == 0 { expected = sums_sha256(read_file(sp), aname) }
+        remove(sp)
+    }
+    if expected == "" && has_prefix(adigest, "sha256:") {
+        expected = substr(adigest, 7, len(adigest))
+    }
+    eprintln("machin-365: fetching " + aname + " (" + rel.tag_name + ")")
+    dc, _, _ := exec("curl -fsSL '" + aurl + "' -o '" + tmp + "'")
+    if dc != 0 {
+        remove(tmp)
+        eprintln("machin-365: download failed: GET " + aurl + " (curl exit " + str(dc) + ")")
+        return 1
+    }
+    if expected != "" {
+        sum := to_hex(sha256_bytes(read_file_bytes(tmp)))
+        if to_lower(sum) != to_lower(expected) {
+            remove(tmp)
+            eprintln("machin-365: sha256 mismatch for " + aname + " — refusing to install")
+            return 1
+        }
+    } else {
+        eprintln("machin-365: warning: " + rel.tag_name + " publishes no checksum" +
+            " for " + aname + " — bytes unverified")
+    }
+    system("chmod +x '" + tmp + "'")
+    // The staged bytes must actually run and identify as the suite before
+    // they are allowed near the installed path — same gate `install` and
+    // `service install` apply to app/bkn binaries.
+    _, vo, ve := exec("'" + tmp + "' version")
+    if ve != "" || !contains(vo, "machin-365 ") {
+        remove(tmp)
+        eprintln("machin-365: downloaded binary failed its 'version' smoke test — not installed")
+        return 1
+    }
+    newb := read_file_bytes(tmp)
+    cur := cli_version()
+    // Byte-identical to what is already running: up to date regardless of
+    // what the version stamps claim (local rebuilds of the same commit).
+    if to_hex(sha256_bytes(read_file_bytes(self))) == to_hex(sha256_bytes(newb)) {
+        remove(tmp)
+        println("machin-365 is already up to date (" + rel.tag_name + ")")
+        return code
+    }
+    // A build ahead of the latest release — master past the tag, an
+    // unreleased local tag, a dirty tree — must not be downgraded onto
+    // the release channel. "unknown" (tarball/no-vcs build) has no
+    // position to defend, so it updates like any other.
+    if cur != "unknown" && (ver_cmp(cur, rel.tag_name) > 0 || ver_past_tag(cur)) {
+        if ver_cmp(cur, rel.tag_name) == 0 && !ver_past_tag(cur) {
+            // Same version, different bytes (e.g. a local rebuild of the
+            // tagged commit): the release artifact is the canonical one.
+        } else {
+            remove(tmp)
+            println("machin-365 " + cur + " is at or ahead of the latest release (" +
+                rel.tag_name + ") — nothing to do")
+            return code
+        }
+    }
+    // Rename over the running binary: on Linux the process keeps the old
+    // inode, so the swap is safe mid-execution. mv -f also replaces a
+    // symlink target's resolved file (self_path() follows /proc exe).
+    if system("mv -f '" + tmp + "' '" + self + "'") != 0 {
+        remove(tmp)
+        eprintln("machin-365: cannot replace " + self +
+            " — check write permissions (re-run install.sh if needed)")
+        return 1
+    }
+    println("updated machin-365 " + cur + " -> " + rel.tag_name + " (" + plat + ")")
+    println("verify: '" + self + "' version")
+    return code
+}
