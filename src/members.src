@@ -72,6 +72,7 @@ func cmd_member_add(a) (code) {
     }
     if st != 200 && st != 201 {
         eprintln("machin-365: member add failed: " + auth_errnote(st, resp))
+        auth_dead_session(st)
         return 1
     }
     em_r, _ := json_get(resp, ".membership.user_email")
@@ -109,6 +110,7 @@ func cmd_member_list(a) (code) {
     }
     if st != 200 {
         eprintln("machin-365: member list failed: " + auth_errnote(st, resp))
+        auth_dead_session(st)
         return 1
     }
     ms := parse_member_rows(resp, "members")
@@ -153,6 +155,7 @@ func cmd_member_remove(a) (code) {
     }
     if st != 200 && st != 204 {
         eprintln("machin-365: member remove failed: " + auth_errnote(st, resp))
+        auth_dead_session(st)
         return 1
     }
     println("removed " + user + " from " + org)
