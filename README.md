@@ -50,6 +50,7 @@ machin-365 config set sync_collections m365/tasks,sync/tombstones
                                   # sticky sync collection list
 machin-365 service install              # fetch latest mbkn release, install + start local bkn
 machin-365 service install --bin ./bkn  # or a local bkn/mbkn binary
+machin-365 service install --latest     # upgrade bkn to the newest release
 machin-365 service start|stop|status     # manage local bkn (127.0.0.1:17630)
 machin-365 sync                     # replicate local bkn <-> remote bkn
 machin-365 sync --watch 15          # continuous replication every 15s
@@ -112,7 +113,11 @@ then `$MACHIN_BKN_BIN`, then `bkn`/`mbkn` on PATH, then an existing suite
 install — and finally downloads the latest
 [machin-bkn](https://github.com/javimosch/machin-bkn) release asset for your
 platform, verified against the release's published checksum and probed like
-any other install. To use a locally built binary instead, pass `--bin` —
+any other install. Because an existing suite install wins that resolution,
+a bare re-run never reaches the release channel — pass
+`service install --latest` (alias `--upgrade`) to fetch and install the
+newest release regardless of what is already installed. To use a locally
+built binary instead, pass `--bin` —
 build it from the machin-bkn repo (needs the `machin` toolchain).
 
 Replication is one pass per invocation (`--watch N` loops every N seconds),
