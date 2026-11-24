@@ -46,9 +46,13 @@ var sync_refresh_warned = false
 // Manifest plumbing (tombs.src): sync_fetch_ok reports whether the last
 // fetch_records call returned the whole collection — a partial fetch
 // must not feed delete detection or become the new baseline.
-// sync_post_*/sync_rpost_* carry the just-processed ref's post-merge
-// local/remote id sets back to sync_pass_once for the manifest updates.
+// sync_fetch_absent marks the one failure that is NOT unknown state:
+// the quiet private-admin refusal, meaning the collection is confirmed
+// undeclared/invisible to this token. sync_post_*/sync_rpost_* carry
+// the just-processed ref's post-merge local/remote id sets back to
+// sync_pass_once for the manifest updates.
 var sync_fetch_ok = true
+var sync_fetch_absent = false
 var sync_post_ok = false
 var sync_post_ids = []string{}
 var sync_rpost_ok = false
@@ -62,6 +66,13 @@ var sync_rpost_mts = make(map[string]int)
 // fetch every record of a collection as raw JSON objects, paginated.
 // sync_fetch_ok ends true only when every page arrived — callers that
 // persist or diff the result (the sync manifest) must check it.
+// sync_fetch_absent ends true only when the fetch stopped on the quiet
+// private-admin refusal: the collection is confirmed absent for this
+// token, so records missing from the view really are absent *for us*
+// and writes would be refused the same way — the merge may still run.
+// Every other early exit (transport error, non-private status, partial
+// page) leaves the contents unknown: absence in the partial view means
+// nothing and the merge must not run on it (#152).
 // sync/tombstones is fetched with a server-side _mtime floor so markers
 // past the retention window never leave the store (tombs.src): the merge
 // then only ever sees live markers, and expired rows stop costing
@@ -70,6 +81,7 @@ var sync_rpost_mts = make(map[string]int)
 func fetch_records(base, tok, ref, side) (recs) {
     recs = []string{}
     sync_fetch_ok = true
+    sync_fetch_absent = false
     off := 0
     while true {
         q := "?limit=500&offset=" + str(off)
@@ -93,6 +105,10 @@ func fetch_records(base, tok, ref, side) (recs) {
             }
             if !quiet { sync_note_err(side, "GET /v1/store/" + ref, st, err, body) }
             sync_fetch_ok = false
+            // quiet == the private-admin refusal was accepted as
+            // confirmed-absent (undeclared/invisible collection); every
+            // other early exit leaves the remote state unknown (#152)
+            sync_fetch_absent = quiet
             break
         }
         i := 0
@@ -178,6 +194,9 @@ func sync_one_ref(ref, tm, man, rman) {
     sync_prov_gate = sync_prov_gate_for(ref, lr, tm, lok)
     rr := fetch_records(sync_remote, sync_remote_tok, ref, "remote")
     rok := sync_fetch_ok
+    // Captured with rok for the same reason: the vanished-sync calls
+    // below run nested fetches that overwrite both globals.
+    rabsent := sync_fetch_absent
 
     // Only COMPLETE fetches may feed delete detection — a partial page
     // would read missing records as deletes. rok is captured before the
@@ -196,6 +215,19 @@ func sync_one_ref(ref, tm, man, rman) {
         tm = tomb_remote_vanished_sync(ref, lr, rr, tm, man, rman)
     }
     post := []string{}
+
+    // The merge itself needs the same completeness gate delete detection
+    // got above (#152): a record missing from a partial fetch is unseen,
+    // not absent — on that view every unfetched remote twin reads as
+    // remote-absent and its local doc gets POSTed over the newer remote
+    // record (and symmetrically for pulls on a partial local fetch).
+    // The one exception is a CONFIRMED-absent remote (sync_fetch_absent:
+    // the quiet private-admin refusal — undeclared or invisible
+    // collection): writes would be refused the same way, so the merge
+    // cannot clobber, and post_doc still gets its self-provision retry.
+    // The local side has no confirmed-absent case — any local fetch
+    // failure skips the merge outright.
+    merge := lok && (rok || rabsent)
 
     // pre-delete: any surviving record that loses to a tombstone goes away
     j := 0
@@ -231,66 +263,75 @@ func sync_one_ref(ref, tm, man, rman) {
         j = j + 1
     }
 
-    // merge survivors; tomb-losing records count as absent on their side
-    j := 0
-    while j < len(lr) {
-        lrec := lr[j]
-        id := rec_id(lrec)
-        lm := rec_mtime_bounded(lrec)
-        ldead := tomb_wins(tm, ref, id, lm)
-        rrec := find_rec(rr, id)
-        rdead := rrec != "" && tomb_wins(tm, ref, id, rec_mtime_bounded(rrec))
-        if !ldead {
-            if id != "" { post = append(post, id) }
-            if rrec == "" || rdead {
-                // local-only (or remote copy dead) → push
-                if sync_write_rec(ref, lrec, true) {
-                    pushed = pushed + 1
-                    if id != "" {
-                        rpost = append(rpost, id)
-                        rpost_mt[id] = push_mtime(lrec, ref)
-                    }
-                }
-            } else {
-                rm := rec_mtime_bounded(rrec)
-                if lm > rm {
+    // merge survivors; tomb-losing records count as absent on their side.
+    // Skipped entirely when either fetch failed: post/rpost then stay
+    // empty/partial and both manifest baselines freeze below, so the
+    // next pass still sees the pre-pass id sets (#152).
+    if merge {
+        j := 0
+        while j < len(lr) {
+            lrec := lr[j]
+            id := rec_id(lrec)
+            lm := rec_mtime_bounded(lrec)
+            ldead := tomb_wins(tm, ref, id, lm)
+            rrec := find_rec(rr, id)
+            rdead := rrec != "" && tomb_wins(tm, ref, id, rec_mtime_bounded(rrec))
+            if !ldead {
+                if id != "" { post = append(post, id) }
+                if rrec == "" || rdead {
+                    // local-only (or remote copy dead) → push
                     if sync_write_rec(ref, lrec, true) {
                         pushed = pushed + 1
-                        // the remote now holds the newer local doc —
-                        // refresh the mtime pre-delete recorded
-                        if id != "" { rpost_mt[id] = push_mtime(lrec, ref) }
+                        if id != "" {
+                            rpost = append(rpost, id)
+                            rpost_mt[id] = push_mtime(lrec, ref)
+                        }
                     }
-                } else if rm > lm {
-                    if sync_write_rec(ref, rrec, false) { pulled = pulled + 1 }
                 } else {
-                    same = same + 1
+                    rm := rec_mtime_bounded(rrec)
+                    if lm > rm {
+                        if sync_write_rec(ref, lrec, true) {
+                            pushed = pushed + 1
+                            // the remote now holds the newer local doc —
+                            // refresh the mtime pre-delete recorded
+                            if id != "" { rpost_mt[id] = push_mtime(lrec, ref) }
+                        }
+                    } else if rm > lm {
+                        if sync_write_rec(ref, rrec, false) { pulled = pulled + 1 }
+                    } else {
+                        same = same + 1
+                    }
                 }
             }
+            j = j + 1
         }
-        j = j + 1
-    }
-    // remote-only (or local-dead) docs → pull
-    j := 0
-    while j < len(rr) {
-        rrec := rr[j]
-        id := rec_id(rrec)
-        if !tomb_wins(tm, ref, id, rec_mtime_bounded(rrec)) {
-            lrec := find_rec(lr, id)
-            lhas := lrec != "" && !tomb_wins(tm, ref, id, rec_mtime_bounded(lrec))
-            if !lhas {
-                if sync_write_rec(ref, rrec, false) {
-                    pulled = pulled + 1
-                    if id != "" { post = append(post, id) }
+        // remote-only (or local-dead) docs → pull
+        j := 0
+        while j < len(rr) {
+            rrec := rr[j]
+            id := rec_id(rrec)
+            if !tomb_wins(tm, ref, id, rec_mtime_bounded(rrec)) {
+                lrec := find_rec(lr, id)
+                lhas := lrec != "" && !tomb_wins(tm, ref, id, rec_mtime_bounded(lrec))
+                if !lhas {
+                    if sync_write_rec(ref, rrec, false) {
+                        pulled = pulled + 1
+                        if id != "" { post = append(post, id) }
+                    }
                 }
             }
+            j = j + 1
         }
-        j = j + 1
     }
     sync_post_ids = post
-    sync_post_ok = lok
+    // post/rpost describe the post-merge id sets — only authoritative
+    // when the merge actually ran on trusted views; a skipped merge
+    // freezes both baselines so vanished-id detection keeps the pre-pass
+    // sets instead of reading every unfetched id as deleted (#152)
+    sync_post_ok = merge
     sync_rpost_ids = rpost
     sync_rpost_mts = rpost_mt
-    sync_rpost_ok = rok
+    sync_rpost_ok = rok && merge
     pout(ref + ": pushed=" + str(pushed) + " pulled=" + str(pulled) +
         " deleted=" + str(deleted) + " same=" + str(same) +
         " local=" + str(len(lr)) + " remote=" + str(len(rr)))

@@ -164,7 +164,14 @@ vanishes on either side — so deletes made through the store API by
 scripts, agents, or other clients propagate too, with a one-line warning
 per pass. Remote-side detection only fires on a complete, non-empty
 remote fetch, so a wiped/rebuilt remote collection is restored from
-local rather than deleting every device's data. `service reset` clears
+local rather than deleting every device's data. The merge itself is
+gated the same way: when either side's fetch fails or comes back
+partial, pushes and pulls for that collection are skipped until a
+complete fetch succeeds — a record missing from a partial view is
+unseen, not absent, so reconciling on it would overwrite newer copies
+on the other side. The one exception is the private-admin refusal on
+an undeclared collection, which counts as confirmed-absent and keeps
+first-sync self-provisioning working. `service reset` clears
 every identity's manifest so a wiped store is restored from remote
 rather than deleted everywhere.
 
