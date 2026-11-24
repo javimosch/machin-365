@@ -33,6 +33,7 @@ func print_usage() {
     println("  sync [--collections a/b,c/d] [--watch [secs]]")
     println("                               replicate local bkn <-> remote bkn")
     println("  version                       print the suite version (also: --version, -V)")
+    println("  update                        install the latest GitHub release over this binary")
     println("")
     println("env:")
     println("  MACHIN_365_HOME    suite home (default ~/.local/share/machin-365)")
@@ -59,6 +60,7 @@ func cmd_usage(path) (s) {
     if path == "run" { s = "usage: machin-365 run <app-id> [args...]"  return }
     if path == "sync" { s = "usage: machin-365 sync [--collections a/b,c/d] [--watch [secs]]"  return }
     if path == "version" { s = "usage: machin-365 version"  return }
+    if path == "update" { s = "usage: machin-365 update"  return }
     if path == "config" { s = "usage: machin-365 config [set sync_collections a/b,c/d]"  return }
     if path == "config set" { s = "usage: machin-365 config set sync_collections a/b,c/d"  return }
     if path == "auth" { s = "usage: machin-365 auth <login|signup|member|memberships|orgs|org|switch-org|status|logout>"  return }

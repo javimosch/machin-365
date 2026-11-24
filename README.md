@@ -55,6 +55,7 @@ machin-365 service start|stop|status     # manage local bkn (127.0.0.1:17630)
 machin-365 sync                     # replicate local bkn <-> remote bkn
 machin-365 sync --watch 15          # continuous replication every 15s
 machin-365 version                  # suite version stamp (also: --version, -V)
+machin-365 update                   # self-update to the latest GitHub release
 ```
 
 ## Demo server
@@ -214,7 +215,7 @@ overrides it — that is also the seam a server-hosted catalog will use.
   (tasks on local bkn, chat over ws://)
 - **Next**: sync daemon/autostart, chat message persistence, tenant
   provisioning + quotas on the demo server, server-hosted catalog
-- **Later**: web/PWA app flavors, desktop launcher shell, `machin-365 update`
+- **Later**: web/PWA app flavors, desktop launcher shell
 
 ## License
 

@@ -128,6 +128,14 @@ func dispatch(a) (code) {
         println("machin-365 " + cli_version())
         return code
     }
+    if cmd == "update" {
+        if has_help(a, 2) { println(cmd_usage("update"))  return code }
+        if len(a) > 2 {
+            usage_fail("unexpected argument '" + a[2] + "'", cmd_usage("update"))
+            return 2
+        }
+        return cmd_update()
+    }
     if cmd == "help" {
         // `help` alone shows the top level; `help <cmd> [sub...]` resolves
         // the joined path to that command's usage — the leaf-level
