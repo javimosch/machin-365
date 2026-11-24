@@ -110,12 +110,30 @@ func sync_watch_emit(pass) {
 // command rewrote it mid-run. The refs, manifests and endpoints were all
 // resolved for the OLD identity, so continuing would reconcile two
 // tenants' datasets as one. Report and stop; the caller restarts sync.
-func sync_watch_identity_stop(fp) (stopped) {
+//
+// config.json is not the only identity surface: bkn_store_switch swaps
+// the local store partition BEFORE the auth command persists the new
+// config, so a failed save_config leaves the fingerprint stale while
+// local fetches already hit the new org's namespace. The .active-key
+// marker names the partition actually serving — when present it must
+// still be the one this watch started with (key "" disables the check:
+// env-overridden local endpoint or no marker to compare).
+func sync_watch_identity_stop(fp, key) (stopped) {
     stopped = false
-    if sync_identity_fp() == fp { return }
-    eprintln("machin-365: sync: identity changed — restart sync" +
-        " (auth login / switch-org / logout rewrote config.json)")
-    stopped = true
+    if sync_identity_fp() != fp {
+        eprintln("machin-365: sync: identity changed — restart sync" +
+            " (auth login / switch-org / logout rewrote config.json)")
+        stopped = true
+        return
+    }
+    k := sync_active_store_key()
+    if key != "" && k != "" && k != key {
+        eprintln("machin-365: sync: local store partition changed —" +
+            " restart sync (auth login / switch-org / logout switched" +
+            " the active bkn store)")
+        stopped = true
+        return
+    }
     return
 }
 
@@ -140,18 +158,19 @@ func sync_watch(refs, watch, have_coll) (code) {
     println("watching every " + str(watch) + "s — ctrl-c to stop")
     flush()
     id_fp := sync_identity_fp()
+    id_key := sync_expected_store_key()
     pass := 0
     persisted := false
     absent_noted := false
     while true {
-        if sync_watch_identity_stop(id_fp) { return 1 }
+        if sync_watch_identity_stop(id_fp, id_key) { return 1 }
         pass = pass + 1
         sync_cap = []string{}
         sync_capture = true
         sync_pass(refs)
         sync_capture = false
         sync_watch_emit(pass)
-        if sync_watch_identity_stop(id_fp) { return 1 }
+        if sync_watch_identity_stop(id_fp, id_key) { return 1 }
         if have_coll && !persisted && sync_err_count == 0 && !sync_local_dead {
             keep := persist_explicit_refs(refs)
             if len(keep) > 0 {

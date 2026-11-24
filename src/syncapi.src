@@ -60,6 +60,26 @@ func sync_identity_fp() (fp) {
     return fp
 }
 
+// The partition key bkn_store_switch assigns the CURRENT config identity
+// — "_unclaimed" without an email, the account hash otherwise. "" when
+// sync reads a store this home's marker cannot describe: a
+// MACHIN_365_LOCAL override points at a different bkn entirely.
+func sync_expected_store_key() {
+    if env("MACHIN_365_LOCAL") != "" { return "" }
+    c := load_config()
+    if c.email == "" { return "_unclaimed" }
+    return account_store_key(c.server, c.email, c.org)
+}
+
+// The local store's active partition marker (bkn/.active-key), or "" when
+// absent or corrupt — pre-partitioning homes carry no marker and are
+// covered by the config fingerprint alone.
+func sync_active_store_key() {
+    k := trim(read_file(suite_home() + "/bkn/.active-key"))
+    if !valid_store_key(k) { return "" }
+    return k
+}
+
 func api_get(base, tok, path) {
     st, body, err := http_request("GET", base + path,
         []string{"Authorization: Bearer " + tok}, "")
