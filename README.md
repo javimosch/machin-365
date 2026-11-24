@@ -123,19 +123,25 @@ built binary instead, pass `--bin` —
 build it from the machin-bkn repo (needs the `machin` toolchain).
 
 Replication is one pass per invocation (`--watch N` loops every N seconds),
-last-writer-wins on an app-level `_mtime` field (POST upserts by record id).
-Only one `sync` runs per suite home at a time — a second invocation
-(including a second `--watch`) fails fast with `sync already running
-(pid N)`; the `.sync.lock` dir in the suite home is reclaimed
-automatically when its holder dies.
-`_mtime` is trusted only up to a skew horizon of **15 minutes** past now:
-a stamp beyond that (client clock skew, a unit bug writing µs/ns) is
-rewritten to the current time when sync writes the doc, and reads treat
-it as the horizon — a poisoned future timestamp degrades to "recent"
-instead of winning every conflict and every tombstone forever. Each pass
-prints a one-line warning when it rewrites stamps, so the bad writer
-surfaces. Tombstone markers get a wider horizon so a back-filled delete
-marker is always stamped just past the record it deletes.
+last-writer-wins on an app-level `_mtime` field — **milliseconds since
+epoch** (POST upserts by record id). Sync stamps `_mtime` on any doc it
+writes that lacks one. A value in the epoch-seconds range (~1e9–1e10,
+what `date +%s` or `time.time()` produce) is not a plausible ms
+timestamp, so sync reads it as seconds and scales it ×1000 rather than
+letting it lose every comparison as "ancient"; each pass prints a
+one-line warning when it sees them, so mixed-unit writers surface
+instead of diverging. `_mtime` is trusted only up to a skew horizon of
+**15 minutes** past now: a stamp beyond that (client clock skew, a unit
+bug writing µs/ns) is rewritten to the current time when sync writes
+the doc, and reads treat it as the horizon — a poisoned future timestamp
+degrades to "recent" instead of winning every conflict and every
+tombstone forever. Each pass prints a one-line warning when it rewrites
+stamps, so the bad writer surfaces. Tombstone markers get a wider
+horizon so a back-filled delete marker is always stamped just past the
+record it deletes. Only one `sync` runs per suite home at a time — a
+second invocation (including a second `--watch`) fails fast with `sync
+already running (pid N)`; the `.sync.lock` dir in the suite home is
+reclaimed automatically when its holder dies.
 
 Which collections sync is sticky configuration: `--collections a/b,c/d` is
 remembered in `config.json` (`sync_collections`) on first use, and
@@ -147,7 +153,8 @@ With no configured set, sync probes `GET /v1/collections` on both sides;
 `--collections` remains the override for servers without that route.
 
 **Deletes propagate via tombstones**: before deleting a synced doc, the app
-POSTs `{"ref":"ns/coll","id":"ns/coll|<id>","_mtime":T}` to the
+POSTs `{"ref":"ns/coll","id":"ns/coll|<id>","_mtime":T}` (`T` =
+milliseconds since epoch, the same unit records use) to the
 `sync/tombstones` collection — the tombstone's own doc id is the compound
 `ref|id`, so same-id deletes in different collections cannot overwrite each
 other — then DELETEs the record. `sync/tombstones` is itself a synced

@@ -141,7 +141,10 @@ func man_decode_mt(blob) (ids, mts) {
             if ie == "" && me == "" {
                 id := parse(iv, "")
                 ids = append(ids, id)
-                mts[id] = parse_int(trim(mv))
+                // norm_mtime heals baselines written before _mtime's
+                // unit was pinned — a seconds-scale mtime would
+                // otherwise read as ancient next to a ms tombstone
+                mts[id] = norm_mtime(parse_int(trim(mv)))
             }
         } else {
             id := parse(line, "")
