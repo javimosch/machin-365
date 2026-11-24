@@ -1,8 +1,9 @@
 // syncrefs.src — which collections a sync pass covers.
 //
 // collection discovery: --collections arg > config.sync_collections >
-// GET /v1/collections (Go bkn and machin-bkn both serve it —
-// javimosch/machin-bkn#13).
+// GET /v1/collections on each side — both bkn flavors serve it
+// (javimosch/machin-bkn#13); a server without the route only warns
+// (see warn_remote_discovery).
 // coll_arg is the already-parsed --collections/--coll value ("" = flag absent).
 // parse_coll_list and the ref validators (ref_ok/seg_ok) live in colls.src.
 
