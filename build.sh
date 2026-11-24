@@ -19,6 +19,26 @@ print("    s = " + json.dumps(open("catalog.json").read(), ensure_ascii=False))
 print("}")
 PY
 
+# Suite version stamp: generated, not committed — same pattern as
+# catalog_gen.src above. Resolution order: MACHIN_365_VERSION override,
+# `git describe --tags --always` (the exact tag on release builds,
+# nearest-tag + commit count + sha otherwise), a committed VERSION file
+# for tarball builds, then "unknown" when no source exists at all.
+VERSION="${MACHIN_365_VERSION:-}"
+if [ -z "$VERSION" ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    VERSION="$(git describe --tags --always --dirty 2>/dev/null || true)"
+fi
+if [ -z "$VERSION" ] && [ -f VERSION ]; then
+    VERSION="$(head -n 1 VERSION | tr -d '[:space:]')"
+fi
+[ -n "$VERSION" ] || VERSION="unknown"
+python3 - "$VERSION" <<'PY' > src/version_gen.src
+import json, sys
+print("func cli_version() (s) {")
+print("    s = " + json.dumps(sys.argv[1], ensure_ascii=False))
+print("}")
+PY
+
 "$MACHIN" encode src/*.src > build/machin-365.mfl
 "$MACHIN" build build/machin-365.mfl -o build/machin-365 --static
 echo "built build/machin-365"
