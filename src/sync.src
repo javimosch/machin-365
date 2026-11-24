@@ -499,8 +499,11 @@ func cmd_sync(a) (code) {
     }
 
     if watch > 0 {
-        sync_watch(refs, watch, have_coll)
-        return code
+        // sync_watch only returns on an identity change (#148) — release
+        // the lock it holds for its whole lifetime before exiting.
+        wrc := sync_watch(refs, watch, have_coll)
+        sync_lock_release()
+        return wrc
     }
     sync_pass(refs)
     sync_lock_release()

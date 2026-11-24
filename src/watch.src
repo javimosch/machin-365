@@ -105,6 +105,20 @@ func sync_watch_emit(pass) {
     sync_cap_flush()
 }
 
+// #148 guard: config.json's tenant identity (server/email/org/session)
+// no longer matches the fingerprint this watch started with — an auth
+// command rewrote it mid-run. The refs, manifests and endpoints were all
+// resolved for the OLD identity, so continuing would reconcile two
+// tenants' datasets as one. Report and stop; the caller restarts sync.
+func sync_watch_identity_stop(fp) (stopped) {
+    stopped = false
+    if sync_identity_fp() == fp { return }
+    eprintln("machin-365: sync: identity changed — restart sync" +
+        " (auth login / switch-org / logout rewrote config.json)")
+    stopped = true
+    return
+}
+
 // the --watch loop: run a pass with output captured, then emit either the
 // full block or the dedup heartbeat. have_coll marks an explicit
 // --collections flag: it is persisted to config.sync_collections once, after
@@ -113,19 +127,31 @@ func sync_watch_emit(pass) {
 // set (#131); when every ref is absent nothing is written and a later pass
 // gets another chance — a ref that gains data or gets declared stops being
 // absent and persists then.
-func sync_watch(refs, watch, have_coll) {
+//
+// Returns 1 when the session identity changed underneath the watch (#148)
+// — the only way this loop ever exits besides a signal. The identity is
+// checked before each pass AND right after one: a change landing
+// mid-pass may already have straddled a fetch/write, but no FURTHER pass
+// may run under the wrong tenant, and the check before the interval
+// sleep means the watch stops immediately instead of after another
+// sleep+pass.
+func sync_watch(refs, watch, have_coll) (code) {
+    code = 0
     println("watching every " + str(watch) + "s — ctrl-c to stop")
     flush()
+    id_fp := sync_identity_fp()
     pass := 0
     persisted := false
     absent_noted := false
     while true {
+        if sync_watch_identity_stop(id_fp) { return 1 }
         pass = pass + 1
         sync_cap = []string{}
         sync_capture = true
         sync_pass(refs)
         sync_capture = false
         sync_watch_emit(pass)
+        if sync_watch_identity_stop(id_fp) { return 1 }
         if have_coll && !persisted && sync_err_count == 0 && !sync_local_dead {
             keep := persist_explicit_refs(refs)
             if len(keep) > 0 {

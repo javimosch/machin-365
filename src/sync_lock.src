@@ -115,6 +115,28 @@ func sync_lock_acquire() (status, owner) {
     return
 }
 
+// pid of the LIVE process holding the sync lock, or 0 — the "is a sync
+// running" probe auth commands use before rewriting the session
+// identity (#148). A stale lock (dead pid) answers 0, same as free.
+func sync_lock_holder() {
+    op := sync_lock_owner()
+    if op > 0 && pid_alive(str(op)) { return op }
+    return 0
+}
+
+// Warn — never refuse — that a sync holds the lock while an auth command
+// rewrites the session identity. A running `sync --watch` stops itself
+// at its next pass boundary (#148), but the user should know it needs a
+// restart under the new identity. One-shot `sync` holds the lock only
+// for a single pass, so the note is informational either way.
+func sync_lock_warn_identity() {
+    op := sync_lock_holder()
+    if op == 0 { return }
+    eprintln("machin-365: note: sync is running (pid " + str(op) + ")" +
+        " — a running 'sync --watch' stops at its next pass after an" +
+        " identity change; restart it when done")
+}
+
 // Drop the lock. Only removes a dir that still records OUR pid — a
 // lock that changed hands belongs to its new owner. rm -rf (not rmdir)
 // so a stray file left by a crashed writer cannot wedge the lock; the

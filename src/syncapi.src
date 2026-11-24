@@ -36,6 +36,30 @@ func sync_setup() {
     if sync_local_tok == "" { sync_local_tok = c.local_token }
 }
 
+// Fingerprint of the config fields that decide WHICH tenant a sync pass
+// reconciles (#148). server+email+org are exactly the local store's
+// partition key (store.src account_store_key — org included, so
+// switch-org gets its own namespace), and the remote side is scoped by
+// the org claim of the stored token. `sync --watch` resolves its
+// endpoints once at startup; when auth login/switch-org/logout rewrites
+// any of these, the running watch would keep pushing the OLD remote
+// token against the NEW local namespace — cross-org writes and remote
+// deletes. Comparing this fingerprint each pass catches that.
+//
+// Token VALUES are deliberately excluded: sync's own refresh rotates
+// them mid-pass and a same-identity re-login must not stop the watch.
+// Only losing the session entirely (auth logout) counts, via the
+// presence flag — which honours MACHIN_365_REMOTE_TOKEN the same way
+// sync_setup does, so an env-managed token is not "logged out" by a
+// config-side token clear. Email is lowercased to match the store key.
+func sync_identity_fp() (fp) {
+    c := load_config()
+    sess := "0"
+    if c.token != "" || env("MACHIN_365_REMOTE_TOKEN") != "" { sess = "1" }
+    fp = c.server + "\n" + to_lower(c.email) + "\n" + c.org + "\n" + sess
+    return fp
+}
+
 func api_get(base, tok, path) {
     st, body, err := http_request("GET", base + path,
         []string{"Authorization: Bearer " + tok}, "")
