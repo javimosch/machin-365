@@ -11,7 +11,7 @@ in [MFL](https://github.com/javimosch/machin).
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/javimosch/machin-365/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/javimosch/machin-365/HEAD/install.sh | sh
 machin-365 init
 machin-365 catalog                  # apps in the catalog + install state
 machin-365 install tasks            # release asset, or:
