@@ -68,8 +68,13 @@ func cmd_service_install(a) (code) {
     disp := src
     if flabel != "" { disp = flabel }
     if src == "" {
-        eprintln("machin-365: no bkn binary found — pass --bin /path/to/bkn")
-        eprintln("  release binaries: https://github.com/javimosch/machin-bkn/releases")
+        if latest {
+            eprintln("machin-365: latest bkn release unavailable — " +
+                "pass --bin /path/to/bkn as a fallback")
+        } else {
+            eprintln("machin-365: no bkn binary found — pass --bin /path/to/bkn")
+            eprintln("  release binaries: https://github.com/javimosch/machin-bkn/releases")
+        }
         return 1
     }
     system("mkdir -p '" + suite_home() + "/bin' '" + suite_home() + "/bkn'")
@@ -83,6 +88,14 @@ func cmd_service_install(a) (code) {
     // a rejected install leaves the suite exactly as it was.
     oldb := read_file_bytes(bkn_bin())
     had_old := file_size(bkn_bin()) > 0
+    // --latest that fetched the bytes already installed means the release
+    // channel has nothing newer — report up-to-date instead of rewriting
+    // identical bytes and bouncing the service for nothing.
+    if latest && had_old && len(b) == len(oldb) &&
+        to_hex(sha256_bytes(b)) == to_hex(sha256_bytes(oldb)) {
+        println("bkn is already " + flabel + " — nothing to do")
+        return code
+    }
     if write_bkn_bin(b) != 0 {
         eprintln("machin-365: cannot write " + bkn_bin())
         return 1
