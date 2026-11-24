@@ -60,6 +60,7 @@ func cmd_init() (code) {
 func dispatch(a) (code) {
     code = 0
     cmd := a[1]
+    if cmd == "telemetry" { return cmd_telemetry(a) }
     if cmd == "init" {
         if has_help(a, 2) { println(cmd_usage("init"))  return code }
         if len(a) > 2 {
@@ -177,5 +178,8 @@ func main() {
         exit(2)
     }
     code := dispatch(a)
+    // after the result is out: one anonymous usage count (never for `telemetry` itself, which only inspects)
+    tv := tel_known_verb(a[1])
+    if tv != "telemetry" { tel_report(tv, code) }
     if code != 0 { exit(code) }
 }

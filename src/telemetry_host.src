@@ -1,0 +1,32 @@
+// telemetry_host.src — the host half of cli-telemetry-spec (see telemetry.src, vendored).
+// Anonymous usage counts: tool, version, verb, os/arch, exit class. No identity, arguments or data.
+// Off with MACHIN_365_TELEMETRY=0, DO_NOT_TRACK=1, or `machin-365 telemetry --off`; off in CI by default.
+// Collector: https://grange.intrane.fr/t (override MACHIN_365_TELEMETRY_URL).
+
+func tel_tool() (tstr) { tstr = "machin-365" }
+func tel_version() (tstr) { tstr = cli_version() }
+func tel_envprefix() (tstr) { tstr = "MACHIN_365" }
+func tel_opt_in() (tyes) { tyes = 0 }
+func tel_stderr(m) { write(2, m) }
+
+// tel_known_verb: only these verb names are ever sent; anything else a user typed is reported as "other".
+func tel_known_verb(v) (tv) {
+    tv = "other"
+    if v == "apps" || v == "auth" || v == "catalog" || v == "config" || v == "help" || v == "init" { tv = v }
+    if v == "install" || v == "prune" || v == "run" || v == "service" || v == "sync" || v == "uninstall" { tv = v }
+    if v == "update" || v == "version" || v == "telemetry" { tv = v }
+    if v == "-h" || v == "--help" { tv = "help" }
+    if v == "--version" { tv = "version" }
+}
+
+func cmd_telemetry(a) (code) {
+    code = 0
+    if tel_hasflag(a, "--off") == 1 {
+        d, ok := tel_set(0)
+        println(d)
+        if ok == 0 { return 1 }
+        return code
+    }
+    println(tel_status_json())
+    return code
+}
