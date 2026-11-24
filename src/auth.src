@@ -554,6 +554,10 @@ func cmd_auth_status() {
     if c.refresh_token != "" {
         println("refresh: present")
     }
+    // "present" only means a token is stored — a removed member's session
+    // still reads healthy while its org claim is dead server-side (#153).
+    // Probe /me once so status reports what the server actually thinks.
+    if c.server != "" && c.token != "" { auth_status_probe(c) }
 }
 
 func cmd_auth_logout() {

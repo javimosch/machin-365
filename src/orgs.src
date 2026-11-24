@@ -63,6 +63,29 @@ func auth_need_login() (msg) {
     return
 }
 
+// auth_org_claim_dead reports the org-claim-dead refusal (#153): a
+// removed member's access token still verifies — the JWT signature is
+// fine — but its org claim names an org the account no longer belongs
+// to, so /v1/auth/me answers 403 "user is not a member of that
+// organization". Only `auth login` recovers: it re-mints the session in
+// a surviving org. Callers restrict this to /me — the same 403 text on
+// an org route is about the route's org argument, not the claim.
+func auth_org_claim_dead(st, body) {
+    if st != 403 { return false }
+    return contains(body, "not a member of that organization")
+}
+
+// auth_dead_session prints the re-login pointer for a surviving-401 auth
+// failure. auth_api already spent its one refresh retry, so the stored
+// session is dead server-side — member removal is exactly what revokes
+// refresh tokens (#153). No-op on other statuses: a refused slug or
+// role is not fixed by signing in again.
+func auth_dead_session(st) {
+    if st == 401 {
+        eprintln("machin-365: session rejected — run: auth login")
+    }
+}
+
 // membership rows off /v1/auth/me (.memberships[]) and off an org's
 // members response (.members[]) share the same fields.
 func parse_member_rows(body, key) (ms) {
@@ -87,7 +110,19 @@ func auth_my_memberships() (ms, msg) {
     msg = ""
     st, body, err := auth_api("GET", "/v1/auth/me", "")
     if err != "" { msg = "memberships failed: " + err  return }
-    if st != 200 { msg = "memberships failed: " + auth_errnote(st, body)  return }
+    if st != 200 {
+        msg = "memberships failed: " + auth_errnote(st, body)
+        // Dead-session shapes must name the only recovery (#153): the
+        // org-claim 403 means this session's org access is gone, and a
+        // surviving 401 means the refresh retry already failed — both
+        // end at `auth login`, which re-mints a usable session.
+        if auth_org_claim_dead(st, body) {
+            msg = msg + " — your session's org access was revoked; run: auth login"
+        } else if st == 401 {
+            msg = msg + " — run: auth login"
+        }
+        return
+    }
     ms = parse_member_rows(body, "memberships")
     return
 }
@@ -220,11 +255,12 @@ func cmd_auth_org_create(a) (code) {
     }
     if st != 200 && st != 201 {
         eprintln("machin-365: org create failed: " + auth_errnote(st, resp))
+        auth_dead_session(st)
         return 1
     }
     c := load_config()
     if c.org == "" && c.refresh_token != "" {
-        lr, _, _, smsg := auth_switch_org_call(strip_slash(c.server), c.refresh_token, slug)
+        lr, rst, _, smsg := auth_switch_org_call(strip_slash(c.server), c.refresh_token, slug)
         if smsg == "" {
             // Same rule as switch-org: org is the store's tenancy key, so
             // re-scoping "" → slug parks the org-less store and activates
@@ -244,7 +280,12 @@ func cmd_auth_org_create(a) (code) {
             return code
         }
         eprintln("machin-365: org created but session rescope failed: " + smsg)
-        eprintln("machin-365: run: auth switch-org " + slug)
+        // A dead refresh token fails switch-org identically — point at
+        // the only recovery instead (#153).
+        auth_dead_session(rst)
+        if rst != 401 {
+            eprintln("machin-365: run: auth switch-org " + slug)
+        }
         return code
     }
     println("org " + slug + " created — you are owner")
@@ -312,6 +353,10 @@ func cmd_auth_switch_org(a) (code) {
     lr, st, resp, msg := auth_switch_org_call(server, c.refresh_token, slug)
     if msg != "" {
         eprintln("machin-365: switch-org failed: " + msg)
+        // The 401 here IS the refresh token being rejected — member
+        // removal revokes it server-side, and only auth login recovers
+        // (#153). Other statuses get their own hints below.
+        auth_dead_session(st)
         if st == 404 {
             // Two different 404s share this route: "no such route" means
             // the server predates switch-org; anything else (e.g.
@@ -343,4 +388,47 @@ func cmd_auth_switch_org(a) (code) {
     }
     println("org: " + slug + " on " + server)
     return code
+}
+
+// auth_status_probe verifies the stored session live for `auth status`
+// (#153): "token: present" only means a token is stored — a removed
+// member's session still reads healthy while its org claim is dead
+// server-side. One /v1/auth/me call through auth_api (the same path
+// `auth orgs`/`memberships` take, refresh retry included) reports what
+// the server actually thinks instead of letting expiry math imply
+// health. Prints the verdict line; silent details stay out of the way.
+func auth_status_probe(c) {
+    st, body, err := auth_api("GET", "/v1/auth/me", "")
+    if err != "" {
+        println("session: unverified — " + err)
+        return
+    }
+    if st == 200 {
+        println("session: verified")
+        // The token's org claim can also die without /me refusing —
+        // e.g. config.org and the claim diverged. Cheap check while the
+        // membership list is already in hand.
+        if c.org != "" {
+            ms := parse_member_rows(body, "memberships")
+            found := false
+            i := 0
+            while i < len(ms) {
+                if ms[i].org_slug == c.org { found = true }
+                i = i + 1
+            }
+            if !found {
+                println("         org " + c.org + " is not a membership — run: auth login")
+            }
+        }
+        return
+    }
+    if auth_org_claim_dead(st, body) {
+        println("session: org access revoked — run: auth login")
+        return
+    }
+    if st == 401 {
+        println("session: rejected — run: auth login")
+        return
+    }
+    println("session: unverified — HTTP " + str(st))
 }
