@@ -307,6 +307,10 @@ func auth_warn_account_change(prev, server, email, org) {
     }
     eprintln("machin-365: 'machin-365 service reset' wipes ALL local data" +
         " on this home.")
+    // Reached only when server/email/org actually changed — the exact
+    // condition that makes a running `sync --watch` stop at its next
+    // pass (#148). Warn so the restart is not a surprise.
+    sync_lock_warn_identity()
 }
 
 func cmd_auth_login(a) (code) {
@@ -561,6 +565,9 @@ func cmd_auth_logout() {
             " is not writable; still logged in")
         return
     }
+    // Logout ends the session a `sync --watch` resolved at startup —
+    // its next pass sees the cleared token and stops (#148).
+    sync_lock_warn_identity()
     println("logged out (server and email kept)")
     if c.email != "" {
         eprintln("machin-365: note: the local store is per-account — " +

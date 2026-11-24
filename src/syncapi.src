@@ -36,6 +36,50 @@ func sync_setup() {
     if sync_local_tok == "" { sync_local_tok = c.local_token }
 }
 
+// Fingerprint of the config fields that decide WHICH tenant a sync pass
+// reconciles (#148). server+email+org are exactly the local store's
+// partition key (store.src account_store_key — org included, so
+// switch-org gets its own namespace), and the remote side is scoped by
+// the org claim of the stored token. `sync --watch` resolves its
+// endpoints once at startup; when auth login/switch-org/logout rewrites
+// any of these, the running watch would keep pushing the OLD remote
+// token against the NEW local namespace — cross-org writes and remote
+// deletes. Comparing this fingerprint each pass catches that.
+//
+// Token VALUES are deliberately excluded: sync's own refresh rotates
+// them mid-pass and a same-identity re-login must not stop the watch.
+// Only losing the session entirely (auth logout) counts, via the
+// presence flag — which honours MACHIN_365_REMOTE_TOKEN the same way
+// sync_setup does, so an env-managed token is not "logged out" by a
+// config-side token clear. Email is lowercased to match the store key.
+func sync_identity_fp() (fp) {
+    c := load_config()
+    sess := "0"
+    if c.token != "" || env("MACHIN_365_REMOTE_TOKEN") != "" { sess = "1" }
+    fp = c.server + "\n" + to_lower(c.email) + "\n" + c.org + "\n" + sess
+    return fp
+}
+
+// The partition key bkn_store_switch assigns the CURRENT config identity
+// — "_unclaimed" without an email, the account hash otherwise. "" when
+// sync reads a store this home's marker cannot describe: a
+// MACHIN_365_LOCAL override points at a different bkn entirely.
+func sync_expected_store_key() {
+    if env("MACHIN_365_LOCAL") != "" { return "" }
+    c := load_config()
+    if c.email == "" { return "_unclaimed" }
+    return account_store_key(c.server, c.email, c.org)
+}
+
+// The local store's active partition marker (bkn/.active-key), or "" when
+// absent or corrupt — pre-partitioning homes carry no marker and are
+// covered by the config fingerprint alone.
+func sync_active_store_key() {
+    k := trim(read_file(suite_home() + "/bkn/.active-key"))
+    if !valid_store_key(k) { return "" }
+    return k
+}
+
 func api_get(base, tok, path) {
     st, body, err := http_request("GET", base + path,
         []string{"Authorization: Bearer " + tok}, "")
