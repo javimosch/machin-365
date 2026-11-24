@@ -67,6 +67,55 @@ func has_help(a, from) {
     return false
 }
 
+// Parse and validate `service install` flags from argv index `from`.
+// Returns the --bin path ("" = absent), whether --latest/--upgrade was
+// given (skip local resolution, go straight to the release channel), and
+// a usage-error message ("" = ok). --latest and --bin are mutually
+// exclusive: one names the release, the other an explicit binary.
+func service_install_parse_args(a, from) (src, latest, err_msg) {
+    src = ""
+    latest = false
+    err_msg = ""
+    i := from
+    while i < len(a) {
+        arg := a[i]
+        if has_prefix(arg, "--") {
+            fname, val, has_eq := flag_eq(arg)
+            if fname == "--latest" || fname == "--upgrade" {
+                if has_eq {
+                    err_msg = fname + " takes no value"
+                    return
+                }
+                latest = true
+                i = i + 1
+                continue
+            }
+            if fname != "--bin" {
+                err_msg = "unknown flag '" + arg + "'"
+                return
+            }
+            v, last, ok := flag_value(a, i, val, has_eq)
+            if !ok {
+                err_msg = "--bin requires a value (e.g. --bin ./bkn)"
+                return
+            }
+            src = v
+            i = last + 1
+            continue
+        }
+        if has_prefix(arg, "-") {
+            err_msg = "unknown flag '" + arg + "'"
+            return
+        }
+        err_msg = "unexpected argument '" + arg + "'"
+        return
+    }
+    if latest && src != "" {
+        err_msg = "--latest cannot be combined with --bin"
+    }
+    return
+}
+
 // Parse and validate `sync` flags. Returns the --watch interval in seconds
 // (0 = one-shot), the --collections/--coll value ("" = flag absent), whether
 // the collections flag was given, and a usage-error message ("" = ok).

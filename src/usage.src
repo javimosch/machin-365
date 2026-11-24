@@ -26,7 +26,8 @@ func print_usage() {
     println("  auth logout                   clear stored tokens")
     println("  config                        show suite paths and account state")
     println("  config set sync_collections a/b,c/d   set the sticky sync collection list")
-    println("  service install [--bin PATH]  install bkn — latest release, or --bin/env/PATH")
+    println("  service install [--bin PATH] [--latest]")
+    println("                               install/upgrade bkn — --latest = newest release")
     println("  service start|stop|status     manage the local bkn instance")
     println("  service reset [--yes]         wipe ALL local bkn data (TTY prompts; --yes skips)")
     println("  sync [--collections a/b,c/d] [--watch [secs]]")
@@ -73,7 +74,7 @@ func cmd_usage(path) (s) {
     if path == "auth status" { s = "usage: machin-365 auth status"  return }
     if path == "auth logout" { s = "usage: machin-365 auth logout"  return }
     if path == "service" { s = "usage: machin-365 service <install|start|stop|status|reset>"  return }
-    if path == "service install" { s = "usage: machin-365 service install [--bin /path/to/bkn]"  return }
+    if path == "service install" { s = "usage: machin-365 service install [--bin /path/to/bkn] [--latest]"  return }
     if path == "service start" { s = "usage: machin-365 service start"  return }
     if path == "service stop" { s = "usage: machin-365 service stop"  return }
     if path == "service status" { s = "usage: machin-365 service status"  return }

@@ -35,48 +35,46 @@ func find_bkn() {
 func cmd_service_install(a) (code) {
     code = 0
     if has_help(a, 3) { println(cmd_usage("service install"))  return code }
-    src := ""
-    i := 3
-    while i < len(a) {
-        arg := a[i]
-        if has_prefix(arg, "--") {
-            fname, val, has_eq := flag_eq(arg)
-            if fname != "--bin" {
-                usage_fail("unknown flag '" + arg + "'", cmd_usage("service install"))
-                return 2
-            }
-            v, last, ok := flag_value(a, i, val, has_eq)
-            if !ok {
-                usage_fail("--bin requires a value (e.g. --bin ./bkn)",
-                    cmd_usage("service install"))
-                return 2
-            }
-            src = v
-            i = last + 1
-            continue
-        }
-        if has_prefix(arg, "-") {
-            usage_fail("unknown flag '" + arg + "'", cmd_usage("service install"))
-            return 2
-        }
-        usage_fail("unexpected argument '" + arg + "'", cmd_usage("service install"))
+    src, latest, err_msg := service_install_parse_args(a, 3)
+    if err_msg != "" {
+        usage_fail(err_msg, cmd_usage("service install"))
         return 2
     }
-    if src == "" { src = find_bkn() }
-    // Nothing local: fall back to the latest machin-bkn release asset for
-    // this platform — the same release-asset path `install <app>` uses.
-    // --bin / MACHIN_BKN_BIN / PATH / an existing install all win above.
     fetched := ""
     flabel := ""
-    if src == "" {
+    if latest {
+        // --latest/--upgrade is the explicit release-channel request: it
+        // skips --bin/env/PATH/existing-install resolution entirely, so a
+        // newer mbkn release stays reachable after bin/bkn exists (#147).
         fp, fl := bkn_fetch_release()
         if fp != "" { src = fp  fetched = fp  flabel = fl }
+    } else {
+        if src == "" { src = find_bkn() }
+        // Nothing local: fall back to the latest machin-bkn release asset
+        // for this platform — the same release-asset path `install <app>`
+        // uses. --bin / MACHIN_BKN_BIN / PATH / an existing install all
+        // win above.
+        if src == "" {
+            fp, fl := bkn_fetch_release()
+            if fp != "" { src = fp  fetched = fp  flabel = fl }
+        } else if src == bkn_bin() {
+            // An existing suite install shadows the release fallback on
+            // every bare `service install` — name the upgrade path instead
+            // of letting the byte-identical no-op read as "up to date".
+            eprintln("machin-365: bkn already installed — " +
+                "'service install --latest' fetches the newest release")
+        }
     }
     disp := src
     if flabel != "" { disp = flabel }
     if src == "" {
-        eprintln("machin-365: no bkn binary found — pass --bin /path/to/bkn")
-        eprintln("  release binaries: https://github.com/javimosch/machin-bkn/releases")
+        if latest {
+            eprintln("machin-365: latest bkn release unavailable — " +
+                "pass --bin /path/to/bkn as a fallback")
+        } else {
+            eprintln("machin-365: no bkn binary found — pass --bin /path/to/bkn")
+            eprintln("  release binaries: https://github.com/javimosch/machin-bkn/releases")
+        }
         return 1
     }
     system("mkdir -p '" + suite_home() + "/bin' '" + suite_home() + "/bkn'")
@@ -90,6 +88,14 @@ func cmd_service_install(a) (code) {
     // a rejected install leaves the suite exactly as it was.
     oldb := read_file_bytes(bkn_bin())
     had_old := file_size(bkn_bin()) > 0
+    // --latest that fetched the bytes already installed means the release
+    // channel has nothing newer — report up-to-date instead of rewriting
+    // identical bytes and bouncing the service for nothing.
+    if latest && had_old && len(b) == len(oldb) &&
+        to_hex(sha256_bytes(b)) == to_hex(sha256_bytes(oldb)) {
+        println("bkn is already " + flabel + " — nothing to do")
+        return code
+    }
     if write_bkn_bin(b) != 0 {
         eprintln("machin-365: cannot write " + bkn_bin())
         return 1
