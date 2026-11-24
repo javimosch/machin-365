@@ -9,6 +9,7 @@ func cmd_config(a) (code) {
         return 2
     }
     c := load_config()
+    println("version:  " + cli_version())
     println("home:    " + suite_home())
     println("server:  " + c.server)
     println("email:   " + c.email)
@@ -118,6 +119,15 @@ func dispatch(a) (code) {
         return 2
     }
     if cmd == "sync" { return cmd_sync(a) }
+    if cmd == "version" {
+        if has_help(a, 2) { println(cmd_usage("version"))  return code }
+        if len(a) > 2 {
+            usage_fail("unexpected argument '" + a[2] + "'", cmd_usage("version"))
+            return 2
+        }
+        println("machin-365 " + cli_version())
+        return code
+    }
     if cmd == "help" {
         // `help` alone shows the top level; `help <cmd> [sub...]` resolves
         // the joined path to that command's usage — the leaf-level
@@ -143,6 +153,10 @@ func dispatch(a) (code) {
         return 2
     }
     if cmd == "--help" || cmd == "-h" { print_usage()  return code }
+    if cmd == "--version" || cmd == "-V" {
+        println("machin-365 " + cli_version())
+        return code
+    }
     eprintln("machin-365: unknown command '" + cmd + "'")
     print_usage()
     return 2

@@ -54,6 +54,7 @@ machin-365 service install --latest     # upgrade bkn to the newest release
 machin-365 service start|stop|status     # manage local bkn (127.0.0.1:17630)
 machin-365 sync                     # replicate local bkn <-> remote bkn
 machin-365 sync --watch 15          # continuous replication every 15s
+machin-365 version                  # suite version stamp (also: --version, -V)
 ```
 
 ## Demo server
