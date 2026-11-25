@@ -150,8 +150,9 @@ Which collections sync is sticky configuration: `--collections a/b,c/d` is
 remembered in `config.json` (`sync_collections`) on first use, and
 `config set sync_collections a/b,c/d` sets it explicitly — either way bare
 `sync` / `sync --watch` keep working without retyping the list. Refs must be
-`ns/coll` — a malformed entry is rejected with exit 2 and never persisted,
-and the list is only saved after a pass completes without call failures.
+`ns/coll` with `[a-z0-9_-]` segments — a malformed entry is rejected with
+exit 2 and never persisted, and the list is only saved after a pass
+completes without call failures.
 With no configured set, sync probes `GET /v1/collections` on the local bkn —
 collections that exist only on the remote are not auto-synced (on a
 shared server the remote list includes other tenants' collections), so
