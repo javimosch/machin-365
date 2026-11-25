@@ -85,6 +85,27 @@ func is_private_admin_err(st, resp) {
     return contains(parse(m, ""), "administered privately")
 }
 
+// true when ref's remote side already refused writes this pass — the
+// ref is skipped for the rest of the pass (remote writes AND pulls).
+func sync_ref_denied(ref) {
+    return has_ref(sync_denied_refs, ref)
+}
+
+// Mark ref remote-denied for the rest of the pass and say so once per
+// process. Only reached for the administered-privately 403 on discovered
+// refs — every other failure still counts toward the pass result.
+func sync_deny_ref(ref) {
+    if !has_ref(sync_denied_refs, ref) {
+        sync_denied_refs = append(sync_denied_refs, ref)
+    }
+    if has_ref(sync_denied_warned, ref) { return }
+    sync_denied_warned = append(sync_denied_warned, ref)
+    perr("machin-365: sync: " + ref + " is administered privately on the" +
+        " remote — skipping it this pass (the token cannot write it;" +
+        " collections pulled before discovery was scoped may need" +
+        " removing locally)")
+}
+
 // org claim of the remote access token; "" for org-less or non-JWT tokens.
 // Same unsigned payload read as jwt_exp — a presence check only, the server
 // stays the verifier. bkn gates self-service PUTs on this claim, so an

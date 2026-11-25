@@ -1,9 +1,15 @@
 // syncrefs.src — which collections a sync pass covers.
 //
 // collection discovery: --collections arg > config.sync_collections >
-// GET /v1/collections on each side — both bkn flavors serve it
-// (javimosch/machin-bkn#13); a server without the route only warns
-// (see warn_remote_discovery).
+// GET /v1/collections on the LOCAL bkn only — probed twice, with the
+// confirmation rule in discover_refs. The remote list is never unioned
+// in: on a shared multi-tenant server it enumerates every collection
+// the token can read — foreign tenants' included — and syncing those
+// replicates other users' data locally, then fails every pass on
+// write-back 403s (#107). Collections that exist only on the remote
+// opt in explicitly via --collections or sync_collections; one remote
+// probe per pass still counts them so the escape hatch stays
+// discoverable.
 // coll_arg is the already-parsed --collections/--coll value ("" = flag absent).
 // parse_coll_list and the ref validators (ref_ok/seg_ok) live in colls.src.
 
@@ -12,24 +18,6 @@
 // report a healthy "nothing to sync" while every org-scoped collection
 // is invisible to the token (#119).
 var sync_orgless_block = false
-
-// A remote probe that does not return 200 (older bkn, non-bkn server,
-// missing route) used to be indistinguishable from "remote has no
-// collections" — remote-only collections then silently never sync.
-// Warn once per invocation; the pass still runs on whatever the probes
-// did return, since local-discovered collections sync correctly.
-func warn_remote_discovery(st, err) {
-    if err != "" {
-        perr("machin-365: remote collection discovery failed: " + err +
-            " — remote-only collections will not sync;" +
-            " set them via sync --collections or config set sync_collections")
-        return
-    }
-    perr("machin-365: remote does not support collection discovery" +
-        " (GET /v1/collections -> HTTP " + str(st) + ")" +
-        " — remote-only collections will not sync;" +
-        " set them via sync --collections or config set sync_collections")
-}
 
 // coll_probe parses one side's /v1/collections answer into validated refs:
 // each ".collections[i].ref" that passes ref_ok (colls.src — the bkn
@@ -61,6 +49,23 @@ func coll_probe(base, tok) (refs, st, err, ok, dropped) {
         j = j + 1
     }
     return
+}
+
+// A local probe that does not return 200 (older bkn without the route,
+// unreachable service) must not be indistinguishable from "nothing to
+// sync" — auto-discovery then silently covers zero collections. Warn
+// once per invocation; explicit --collections/config still work.
+func warn_local_discovery(st, err) {
+    if err != "" {
+        perr("machin-365: local collection discovery failed: " + err +
+            " — no collections will auto-sync;" +
+            " set them via sync --collections or config set sync_collections")
+        return
+    }
+    perr("machin-365: local bkn does not support collection discovery" +
+        " (GET /v1/collections -> HTTP " + str(st) + ")" +
+        " — no collections will auto-sync;" +
+        " set them via sync --collections or config set sync_collections")
 }
 
 // An org-less token is refused by every org-scoped collection, so
@@ -139,61 +144,67 @@ func persist_coll_flag(refs) (code) {
     return code
 }
 
-func discover_refs(coll_arg) (refs) {
+// discover_refs returns the sync set plus whether it was auto-discovered
+// (true) rather than named explicitly — discovered refs get fail-soft
+// treatment on remote write-denial in sync.src (#107).
+func discover_refs(coll_arg) (refs, discovered) {
     refs = []string{}
-    if coll_arg != "" { return parse_coll_list(coll_arg) }
+    discovered = false
+    if coll_arg != "" { return parse_coll_list(coll_arg), false }
     c := load_config()
-    if c.sync_collections != "" { return parse_coll_list(c.sync_collections) }
-    // probe both sides, union what each exposes — twice per side. The
-    // discovered set drives the whole pass (sync, remote provisioning, and
-    // --collections persistence), and probe output has intermittently
-    // yielded well-formed refs that exist on neither side (#109). When both
-    // probes of a side answer, a ref must appear in BOTH to be believed:
-    // transient garbage does not survive a second read. A failed second
-    // probe cannot disprove anything, so the side falls back to its first
-    // answer — the same trust level as the single probe this replaced. A
-    // collection created between the two probes is picked up next pass.
-    remote_ok := false
-    remote_st := 0
-    remote_err := ""
-    dropped := 0
+    if c.sync_collections != "" { return parse_coll_list(c.sync_collections), false }
+    discovered = true
+    // Probe the LOCAL bkn twice. The discovered set drives the whole
+    // pass (sync, remote provisioning, and --collections persistence),
+    // and probe output has intermittently yielded well-formed refs that
+    // exist on neither side (#109). When both probes answer, a ref must
+    // appear in BOTH to be believed: transient garbage does not survive
+    // a second read. A failed second probe cannot disprove anything, so
+    // discovery falls back to the first answer — the same trust level as
+    // the single probe this replaced. A collection created between the
+    // two probes is picked up next pass.
+    r1, _, _, ok1, d1 := coll_probe(sync_local, sync_local_tok)
+    r2, st2, e2, ok2, d2 := coll_probe(sync_local, sync_local_tok)
+    dropped := d1 + d2
+    side := []string{}
     unconfirmed := 0
-    i := 0
-    while i < 2 {
-        base := sync_remote
-        tok := sync_remote_tok
-        if i == 1 { base = sync_local  tok = sync_local_tok }
-        r1, st1, e1, ok1, d1 := coll_probe(base, tok)
-        r2, st2, e2, ok2, d2 := coll_probe(base, tok)
-        dropped = dropped + d1 + d2
-        side := []string{}
-        if ok1 && ok2 {
-            a := 0
-            while a < len(r1) {
-                if has_ref(r2, r1[a]) && !has_ref(side, r1[a]) {
-                    side = append(side, r1[a])
-                }
-                a = a + 1
-            }
-            unconfirmed = unconfirmed + len(r1) + len(r2) - 2 * len(side)
-        } else if ok1 {
-            side = r1
-        } else if ok2 {
-            side = r2
-        }
-        if i == 0 {
-            remote_ok = ok1 || ok2
-            // the warn below only fires when BOTH probes failed — report
-            // the latest failure either way
-            if !ok1 { remote_st = st1  remote_err = e1 }
-            if !ok2 { remote_st = st2  remote_err = e2 }
-        }
+    if ok1 && ok2 {
         a := 0
-        while a < len(side) {
-            if !has_ref(refs, side[a]) { refs = append(refs, side[a]) }
+        while a < len(r1) {
+            if has_ref(r2, r1[a]) && !has_ref(side, r1[a]) {
+                side = append(side, r1[a])
+            }
             a = a + 1
         }
-        i = i + 1
+        unconfirmed = len(r1) + len(r2) - 2 * len(side)
+    } else if ok1 {
+        side = r1
+    } else if ok2 {
+        side = r2
+    }
+    a := 0
+    while a < len(side) {
+        if !has_ref(refs, side[a]) { refs = append(refs, side[a]) }
+        a = a + 1
+    }
+    if !ok1 && !ok2 {
+        // both probes failed — report the latest failure
+        warn_local_discovery(st2, e2)
+    }
+    // Remote-only collections are NOT auto-synced — on a shared server
+    // most of them belong to other tenants (#107). One probe per
+    // process still tells the user they exist and how to opt in; count
+    // only, since the names are mostly not theirs. A failed remote probe
+    // only costs the count — it feeds nothing else.
+    rr, _, _, rok, _ := coll_probe(sync_remote, sync_remote_tok)
+    extra := 0
+    if rok {
+        i := 0
+        while i < len(rr) {
+            // sync/tombstones syncs unconditionally — it is not "absent"
+            if rr[i] != sync_tomb_coll && !has_ref(refs, rr[i]) { extra = extra + 1 }
+            i = i + 1
+        }
     }
     if dropped > 0 {
         perr("machin-365: discovery dropped " + str(dropped) +
@@ -203,6 +214,10 @@ func discover_refs(coll_arg) (refs) {
         perr("machin-365: discovery ignored " + str(unconfirmed) +
             " unconfirmed collection ref(s)")
     }
-    if !remote_ok { warn_remote_discovery(remote_st, remote_err) }
-    return refs
+    if extra > 0 {
+        perr("machin-365: sync: remote lists " + str(extra) +
+            " collection(s) absent locally — not auto-synced;" +
+            " add yours via sync --collections or config set sync_collections")
+    }
+    return refs, discovered
 }
