@@ -1,0 +1,28 @@
+// adopt.src — `auth adopt-local`: merge a parked pre-auth (_unclaimed)
+// store into the active local store. First sign-in adopts automatically
+// inside bkn_store_switch (store.src); this is the recovery path for
+// homes stranded before that existed, or for a merge that failed and
+// left the parked copy in place. Operates on local files only — no
+// login required.
+
+func cmd_auth_adopt_local(a) (code) {
+    code = 0
+    if len(a) > 3 {
+        usage_fail("unexpected argument '" + a[3] + "'",
+            "usage: machin-365 auth adopt-local")
+        return 2
+    }
+    srcp := suite_home() + "/bkn/accounts/_unclaimed.db"
+    if file_size(srcp) <= 0 {
+        println("no parked pre-auth store — nothing to adopt")
+        return code
+    }
+    ad, err := bkn_adopt_unclaimed()
+    if err != "" {
+        eprintln("machin-365: " + err)
+        return 1
+    }
+    println("adopted " + str(ad) + " pre-auth record(s) into the active" +
+        " local store")
+    return code
+}

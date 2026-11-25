@@ -85,6 +85,7 @@ func dispatch(a) (code) {
         if sub == "orgs" { return cmd_auth_orgs(a) }
         if sub == "org" { return cmd_auth_org(a) }
         if sub == "switch-org" { return cmd_auth_switch_org(a) }
+        if sub == "adopt-local" { return cmd_auth_adopt_local(a) }
         if sub == "status" || sub == "logout" {
             if len(a) > 3 {
                 if has_help(a, 3) { println(cmd_usage("auth " + sub))  return code }

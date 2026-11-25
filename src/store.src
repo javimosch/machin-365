@@ -349,3 +349,140 @@ func bkn_store_switch(prev_server, prev_email, prev_org, server, email, org) (ms
     return msg
 }
 
+// Adopt the parked pre-auth store into the ACTIVE bkn.db. A suite home
+// used before its first sign-in keeps its rows under the "_unclaimed"
+// partition; when a real identity activates, bkn_store_switch parks that
+// database at accounts/_unclaimed.db* — without this merge every
+// pre-login record is stranded where nothing can reach it. Rows copy
+// verbatim at the sqlite level: doc never carries its own id (the store
+// strips $.id on write and re-injects the column on read), record ids
+// are ULIDs so INSERT OR IGNORE collisions are ~impossible, and the
+// account's own row wins the rare conflict. collections rows come along
+// so normalize rules survive; the access column is local-store
+// irrelevant (the loopback token is admin) and keeps its default. The
+// merge is one transaction; the parked copy is KEPT under
+// accounts/_unclaimed.db* — re-running is idempotent (OR IGNORE), it
+// preserves anything the just-stopped bkn committed during shutdown,
+// and 'service reset' remains the wipe. Returns the inserted record
+// count with err "" on success (0 when there was nothing to adopt), or
+// err set to the diagnostic on failure.
+func bkn_adopt_unclaimed() (adopted, err) {
+    adopted = 0
+    err = ""
+    srcp := suite_home() + "/bkn/accounts/_unclaimed.db"
+    if file_size(srcp) <= 0 { return }
+    ddb := sqlite_open(bkn_db())
+    if ddb == 0 {
+        err = "pre-auth local data is parked at " + srcp +
+            " but the active store could not be opened"
+        return
+    }
+    sqlite_exec(ddb, "PRAGMA busy_timeout = 5000", []string{})
+    // A fresh dst gets the store shape bkn expects; on an existing store
+    // these are no-ops and bkn's own migrations add anything newer next
+    // open.
+    if sqlite_exec(ddb, "CREATE TABLE IF NOT EXISTS collections (ns TEXT NOT NULL, name TEXT NOT NULL, normalize TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, PRIMARY KEY (ns, name))", []string{}) != 0 ||
+        sqlite_exec(ddb, "CREATE TABLE IF NOT EXISTS records (ns TEXT NOT NULL, coll TEXT NOT NULL, id TEXT NOT NULL, scope TEXT NOT NULL DEFAULT '', doc TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (ns, coll, scope, id))", []string{}) != 0 {
+        sqlite_close(ddb)
+        err = "pre-auth local data is parked at " + srcp +
+            " but the active store schema could not be prepared"
+        return
+    }
+    // A dst whose records table predates scoped keys cannot take the
+    // merge without silently dropping tenancy — leave it parked.
+    d := sqlite_query(ddb, "SELECT sql AS s FROM sqlite_master WHERE type='table' AND name='records'", []string{})
+    dsql := ""
+    if d != "" && d != "[]" {
+        sv, se := json_get(d, "[0].s")
+        if se == "" { dsql = parse(sv, "") }
+    }
+    if !contains(dsql, "scope") {
+        sqlite_close(ddb)
+        err = "pre-auth local data is parked at " + srcp +
+            " — the active store has a pre-scope schema; run" +
+            " 'service start' so bkn migrates it, then" +
+            " 'auth adopt-local'"
+        return
+    }
+    arc := sqlite_exec(ddb, "ATTACH DATABASE ? AS preauth", []string{srcp})
+    if arc != 0 {
+        sqlite_close(ddb)
+        err = "pre-auth local data is parked at " + srcp +
+            " and could not be read (sqlite error " + str(arc) + ")"
+        return
+    }
+    t := sqlite_query(ddb, "SELECT COUNT(*) AS c FROM preauth.records", []string{})
+    if t == "" || t == "[]" {
+        sqlite_exec(ddb, "DETACH DATABASE preauth", []string{})
+        sqlite_close(ddb)
+        err = "pre-auth store " + srcp + " is not a readable bkn database"
+        return
+    }
+    srcn := 0
+    tv, te := json_get(t, "[0].c")
+    if te == "" { srcn = parse_int(trim(tv)) }
+    // A pre-scope src has no scope column — its rows are all unscoped,
+    // so '' is the exact value to write. Only a positively-read DDL may
+    // trigger that: an unreadable one keeps "scope" so the INSERT fails
+    // loudly instead of silently dropping tenancy.
+    sddl := ""
+    sdok := false
+    sd := sqlite_query(ddb, "SELECT sql AS s FROM preauth.sqlite_master WHERE type='table' AND name='records'", []string{})
+    if sd != "" && sd != "[]" {
+        sv, se := json_get(sd, "[0].s")
+        if se == "" {
+            sddl = parse(sv, "")
+            sdok = true
+        }
+    }
+    scope_sel := "scope"
+    if sdok && !contains(sddl, "scope") { scope_sel = "''" }
+    has_colls := false
+    ct := sqlite_query(ddb, "SELECT COUNT(*) AS c FROM preauth.sqlite_master WHERE type='table' AND name='collections'", []string{})
+    if ct != "" && ct != "[]" {
+        cv, ce := json_get(ct, "[0].c")
+        if ce == "" && trim(cv) != "0" { has_colls = true }
+    }
+    brc := sqlite_exec(ddb, "BEGIN IMMEDIATE", []string{})
+    if brc != 0 {
+        sqlite_exec(ddb, "DETACH DATABASE preauth", []string{})
+        sqlite_close(ddb)
+        err = "pre-auth local data stays parked at " + srcp +
+            " — merge failed (sqlite error " + str(brc) + ")"
+        return
+    }
+    rc := 0
+    if has_colls {
+        rc = sqlite_exec(ddb, "INSERT OR IGNORE INTO collections (ns, name, normalize, created_at) SELECT ns, name, normalize, created_at FROM preauth.collections", []string{})
+    }
+    if rc == 0 {
+        rc = sqlite_exec(ddb, "INSERT OR IGNORE INTO records (ns, coll, scope, id, doc, created_at, updated_at) SELECT ns, coll, " + scope_sel + ", id, doc, created_at, updated_at FROM preauth.records", []string{})
+    }
+    if rc != 0 {
+        sqlite_exec(ddb, "ROLLBACK", []string{})
+        sqlite_exec(ddb, "DETACH DATABASE preauth", []string{})
+        sqlite_close(ddb)
+        err = "pre-auth local data stays parked at " + srcp +
+            " — merge failed (sqlite error " + str(rc) + ")"
+        return
+    }
+    ch := sqlite_query(ddb, "SELECT changes() AS n", []string{})
+    adopted = srcn
+    if ch != "" && ch != "[]" {
+        cv, ce := json_get(ch, "[0].n")
+        if ce == "" { adopted = parse_int(trim(cv)) }
+    }
+    crc := sqlite_exec(ddb, "COMMIT", []string{})
+    if crc != 0 {
+        sqlite_exec(ddb, "ROLLBACK", []string{})
+        sqlite_exec(ddb, "DETACH DATABASE preauth", []string{})
+        sqlite_close(ddb)
+        err = "pre-auth local data stays parked at " + srcp +
+            " — merge failed (sqlite error " + str(crc) + ")"
+        return
+    }
+    sqlite_exec(ddb, "DETACH DATABASE preauth", []string{})
+    sqlite_close(ddb)
+    return
+}
+
