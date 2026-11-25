@@ -21,6 +21,13 @@
 //     opposite store so both sides pin the same sane value; without
 //     the mirror the raw stamp would keep winning reads on the store
 //     that was not written.
+//   - heal_future_mtimes covers what the write bound cannot reach: a
+//     poisoned record sitting IDENTICAL on both sides never goes
+//     through stamp() (the merge reads "same" and writes nothing), so
+//     its raw stamp would survive forever — and because the read bound
+//     moves with now, a fixed tombstone marker eventually loses to it.
+//     Each fetch re-POSTs stored docs beyond the horizon, converging
+//     the value to now on that side independently of the merge.
 //
 // Tombstone markers get a wider WRITE horizon (now + 2*skew): a
 // back-filled marker is stamped at max(now, record_mtime + 1) so it
@@ -126,4 +133,33 @@ func sync_write_rec(ref, rec, to_remote) (ok) {
         if doc != rec { post_doc(sync_remote, sync_remote_tok, ref, doc, "remote") }
     }
     return ok
+}
+
+// Re-POST fetched records whose stored _mtime sits beyond the record
+// horizon: stamp() only runs when a merge writes the doc, so poison
+// that is identical on both sides (or never conflicts) would keep its
+// raw stamp forever — and rec_mtime_bounded's moving horizon means a
+// fixed tombstone eventually loses to it (#129). Healing on fetch
+// converges each side's stored value to now independently; the pass's
+// in-memory recs are untouched, so this pass's comparisons are
+// unchanged and the next fetch sees the sane value. sync/tombstones is
+// exempt: markers legitimately carry record_mtime+1 up to the wider
+// tomb horizon. Docs stamp() cannot rewrite (jset_mtime failure) are
+// skipped rather than re-POSTed unchanged every pass.
+func heal_future_mtimes(base, tok, ref, recs, side) {
+    if ref == sync_tomb_coll { return }
+    h := mtime_horizon()
+    i := 0
+    while i < len(recs) {
+        r := recs[i]
+        if rec_mtime(r) > h {
+            doc := stamp(r, ref)
+            if doc != r {
+                perr("machin-365: sync: " + ref + "/" + rec_id(r) +
+                    " had a future-dated _mtime — clamped to now")
+                post_doc(base, tok, ref, doc, side)
+            }
+        }
+        i = i + 1
+    }
 }
