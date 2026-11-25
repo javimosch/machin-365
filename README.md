@@ -128,7 +128,13 @@ build it from the machin-bkn repo (needs the `machin` toolchain).
 Replication is one pass per invocation (`--watch N` loops every N seconds),
 last-writer-wins on an app-level `_mtime` field — **milliseconds since
 epoch** (POST upserts by record id). Sync stamps `_mtime` on any doc it
-writes that lacks one. A value in the epoch-seconds range (~1e9–1e10,
+writes that lacks one — and before merging, it stamps `_mtime = now` onto
+any *local* record still lacking a usable one: apps never write `_mtime`
+themselves, so an unstamped local write is by definition the freshest
+thing sync has seen, and without the stamp it would read as epoch 0 and
+lose LWW to the older remote copy (silently reverting the edit). Records
+a live tombstone already condemns keep their epoch-0 read, so deletes
+still win over ambiguous unstamped writes. A value in the epoch-seconds range (~1e9–1e10,
 what `date +%s` or `time.time()` produce) is not a plausible ms
 timestamp, so sync reads it as seconds and scales it ×1000 rather than
 letting it lose every comparison as "ancient"; each pass prints a

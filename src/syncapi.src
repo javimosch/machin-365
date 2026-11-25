@@ -116,6 +116,29 @@ func fetch_range(base, tok, ref, side, filt) (recs) {
     return recs
 }
 
+func rec_id(rec) {
+    v, e := json_get(rec, ".id")
+    if e != "" { return "" }
+    return parse(v, "")
+}
+
+// string field of a raw record JSON; "" when absent.
+func jstr(rec, path) {
+    v, e := json_get(rec, path)
+    if e != "" { return "" }
+    return parse(v, "")
+}
+
+// find a raw record by id in a fetched list; "" when absent.
+func find_rec(recs, id) {
+    i := 0
+    while i < len(recs) {
+        if rec_id(recs[i]) == id { return recs[i] }
+        i = i + 1
+    }
+    return ""
+}
+
 func post_doc(base, tok, ref, doc, side) {
     if side == "remote" && sync_ref_denied(ref) { return false }
     st, resp, err := api_post(base, tok, "/v1/store/" + ref, doc)

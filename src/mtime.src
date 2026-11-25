@@ -36,6 +36,51 @@
 // horizon. Marker READS stay unbounded (load_tombs uses rec_mtime): a
 // marker is only ever written at ~now or ~horizon+1, and bounding it
 // would tie it against the record it must beat.
+//
+// heal_local_docs covers the other end of the _mtime lifecycle (#1):
+// _mtime is a sync-internal field apps never write, so a plain local
+// upsert leaves the stored record reading as epoch 0 and losing every
+// LWW comparison. Every local record without a usable _mtime was
+// necessarily written after the last sync pass that stamped it, so
+// now_ms() is the freshest honest timestamp — stamped and persisted
+// before the merge compares mtimes.
+
+// _mtime is milliseconds since epoch — the unit sync writes (now_ms())
+// and every comparison assumes. Epoch-SECONDS values (what `date +%s`,
+// time.time() or Math.floor(Date.now()/1000) produce, ~1e9–1e10 today)
+// are ~1000x too small: read literally they lose every LWW/tombstone
+// comparison as "ancient" and fall under tomb_cutoff() so markers look
+// expired (#126). No real ms timestamp sits below mtime_ms_floor
+// (1e11 ms ≈ 1973-03), so a positive value under it is read as seconds
+// and scaled ×1000 — the same instant, in the documented unit. rec_mtime
+// is the single read funnel, so records, tombstones and manifests all
+// compare in ms; the stored doc keeps its original value.
+var mtime_ms_floor = 100000000000
+
+func norm_mtime(mt) {
+    if mt > 0 && mt < mtime_ms_floor { return mt * 1000 }
+    return mt
+}
+
+// mtime of a raw record JSON, normalized to ms; 0 when absent/unparseable.
+func rec_mtime(rec) (mt) {
+    mt = 0
+    v, e := json_get(rec, "._mtime")
+    if e != "" { return mt }
+    return norm_mtime(parse_int(trim(v)))
+}
+
+// count records whose _mtime sits in the epoch-seconds band — fetch_range
+// calls this once per fetched doc so the pass can warn about mixed-unit
+// writers instead of silently scaling them forever.
+func note_mtime_suspect(rec) {
+    v, e := json_get(rec, "._mtime")
+    if e != "" { return }
+    mt := parse_int(trim(v))
+    if mt > 0 && mt < mtime_ms_floor {
+        sync_mtime_suspect = sync_mtime_suspect + 1
+    }
+}
 
 var mtime_skew_ms = 900000 // 15 min
 
@@ -95,6 +140,10 @@ func stamp(rec, ref) {
     v, e := json_get(rec, "._mtime")
     if e == "" {
         mt := parse_int(trim(v))
+        // A present-but-unusable stamp (0, negative, non-numeric) reads
+        // as epoch 0 in every comparison — the same hole as an absent
+        // field. jset_mtime rewrites it whatever shape it had.
+        if mt <= 0 { return jset_mtime(rec, now_ms()) }
         if mt <= mtime_write_horizon(ref) { return rec }
         sync_mtime_clamped = sync_mtime_clamped + 1
         return jset_mtime(rec, now_ms())
@@ -162,4 +211,43 @@ func heal_future_mtimes(base, tok, ref, recs, side) {
         }
         i = i + 1
     }
+}
+
+// heal_local_docs stamps _mtime=now onto every local record whose stamp
+// is absent or unusable (rec_mtime_bounded <= 0) and persists it via
+// POST — the same upsert-by-id write path sync itself uses, so it works
+// on both bkn implementations and cannot mangle ids the way a
+// record-path write could (#140). lr is updated in place so the merge
+// compares the healed timestamp; without the write-back the stamp would
+// not persist and every pass would re-heal the same docs forever.
+//
+// Two guards keep the heal from overriding stronger signals:
+//
+//   - tomb_wins on the PRE-heal read: a record a live tombstone already
+//     condemns keeps its epoch-0 mtime, so deletes still beat ambiguous
+//     unstamped writes instead of being resurrected by a "now" stamp.
+//   - ref == sync_tomb_coll: an unstamped tombstone marker is dead by
+//     design (load_tombs ignores mt <= cutoff), and stamping it would
+//     revive a delete.
+//
+// Returns how many records were stamped; the caller reports it.
+func heal_local_docs(ref, lr, tm) (n) {
+    n = 0
+    if ref == sync_tomb_coll { return n }
+    j := 0
+    while j < len(lr) {
+        r := lr[j]
+        id := rec_id(r)
+        mt := rec_mtime_bounded(r)
+        if id != "" && mt <= 0 && !tomb_wins(tm, ref, id, mt) {
+            doc := stamp(r, ref)
+            if doc != r &&
+                post_doc(sync_local, sync_local_tok, ref, doc, "local") {
+                lr[j] = doc
+                n = n + 1
+            }
+        }
+        j = j + 1
+    }
+    return n
 }

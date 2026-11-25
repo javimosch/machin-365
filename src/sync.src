@@ -86,66 +86,6 @@ var sync_rpost_ids = []string{}
 // v2 payload (manifests.src man_encode_mt).
 var sync_rpost_mts = make(map[string]int)
 
-// _mtime is milliseconds since epoch — the unit sync writes (now_ms())
-// and every comparison assumes. Epoch-SECONDS values (what `date +%s`,
-// time.time() or Math.floor(Date.now()/1000) produce, ~1e9–1e10 today)
-// are ~1000x too small: read literally they lose every LWW/tombstone
-// comparison as "ancient" and fall under tomb_cutoff() so markers look
-// expired (#126). No real ms timestamp sits below mtime_ms_floor
-// (1e11 ms ≈ 1973-03), so a positive value under it is read as seconds
-// and scaled ×1000 — the same instant, in the documented unit. rec_mtime
-// is the single read funnel, so records, tombstones and manifests all
-// compare in ms; the stored doc keeps its original value.
-var mtime_ms_floor = 100000000000
-
-func norm_mtime(mt) {
-    if mt > 0 && mt < mtime_ms_floor { return mt * 1000 }
-    return mt
-}
-
-// mtime of a raw record JSON, normalized to ms; 0 when absent/unparseable.
-func rec_mtime(rec) (mt) {
-    mt = 0
-    v, e := json_get(rec, "._mtime")
-    if e != "" { return mt }
-    return norm_mtime(parse_int(trim(v)))
-}
-
-// count records whose _mtime sits in the epoch-seconds band — fetch_range
-// calls this once per fetched doc so the pass can warn about mixed-unit
-// writers instead of silently scaling them forever.
-func note_mtime_suspect(rec) {
-    v, e := json_get(rec, "._mtime")
-    if e != "" { return }
-    mt := parse_int(trim(v))
-    if mt > 0 && mt < mtime_ms_floor {
-        sync_mtime_suspect = sync_mtime_suspect + 1
-    }
-}
-
-func rec_id(rec) {
-    v, e := json_get(rec, ".id")
-    if e != "" { return "" }
-    return parse(v, "")
-}
-
-// string field of a raw record JSON; "" when absent.
-func jstr(rec, path) {
-    v, e := json_get(rec, path)
-    if e != "" { return "" }
-    return parse(v, "")
-}
-
-// find a raw record by id in a fetched list; "" when absent.
-func find_rec(recs, id) {
-    i := 0
-    while i < len(recs) {
-        if rec_id(recs[i]) == id { return recs[i] }
-        i = i + 1
-    }
-    return ""
-}
-
 // merge one collection both ways. tm maps "ref|id" -> tombstone _mtime;
 // records older than their tombstone are DELETE'd on their side and then
 // treated as absent, so they cannot resurrect. An empty tm disables
@@ -250,6 +190,18 @@ func sync_one_ref(ref, tm, man, rman) {
     // baseline below advances on its own side's fetch completeness rather
     // than freezing both on the failed side's unknown state (#152).
     if merge {
+        // _mtime is a sync-internal stamp apps never write, so a local
+        // record without a usable one reads as epoch 0 and loses every
+        // LWW comparison — the next pull silently reverts the local
+        // edit (#1). heal_local_docs stamps (and persists) now_ms() on
+        // such records before any mtime is compared; records a live
+        // tombstone condemns keep their epoch-0 read so deletes still
+        // win over ambiguous unstamped writes.
+        hn := heal_local_docs(ref, lr, tm)
+        if hn > 0 {
+            perr("machin-365: sync: " + ref + ": stamped _mtime on " +
+                str(hn) + " local record(s) written without it")
+        }
         j := 0
         while j < len(lr) {
             lrec := lr[j]
