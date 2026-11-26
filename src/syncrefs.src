@@ -2,7 +2,9 @@
 //
 // collection discovery: --collections arg > config.sync_collections >
 // GET /v1/collections on the LOCAL bkn only — probed twice, with the
-// confirmation rule in discover_refs. The remote list is never unioned
+// confirmation rule in discover_refs — cross-checked against the
+// collections table of the suite-managed store read directly over
+// SQLite (local_coll_db_refs). The remote list is never unioned
 // in: on a shared multi-tenant server it enumerates every collection
 // the token can read — foreign tenants' included — and syncing those
 // replicates other users' data locally, then fails every pass on
@@ -49,6 +51,53 @@ func coll_probe(base, tok) (refs, st, err, ok, dropped) {
         j = j + 1
     }
     return
+}
+
+type CollDbRow struct { ref string }
+
+// local_coll_db_refs reads the suite-managed local store's collections
+// table straight out of bkn/bkn.db — the same rows GET /v1/collections
+// serves, fetched without the HTTP body → json_get → parse pipeline that
+// intermittently produced well-formed refs present on neither side
+// (#109). ok is false when the local endpoint is env-overridden (the db
+// then belongs to a different bkn, or the token may not see every row)
+// or the file cannot be read as a bkn store; the caller then keeps the
+// probe answer. An honest probe can never legitimately disagree with
+// the table — it IS the table — so a mismatch means probe corruption
+// and the store wins.
+func local_coll_db_refs() (refs, ok) {
+    refs = []string{}
+    ok = false
+    if env("MACHIN_365_LOCAL") != "" || env("MACHIN_365_LOCAL_TOKEN") != "" { return }
+    if !is_dir(suite_home() + "/bkn") { return }
+    if file_size(bkn_db()) <= 0 { return }
+    db := sqlite_open(bkn_db())
+    if db == 0 { return }
+    rows := sqlite_query(db,
+        "SELECT ns || '/' || name AS ref FROM collections" +
+        " ORDER BY ns, name", []string{})
+    sqlite_close(db)
+    if rows == "" { return }
+    parsed := parse(rows, []CollDbRow{})
+    i := 0
+    while i < len(parsed) {
+        r := parsed[i].ref
+        if ref_ok(r) && !has_ref(refs, r) { refs = append(refs, r) }
+        i = i + 1
+    }
+    ok = true
+    return
+}
+
+// set equality for two deduped ref lists.
+func same_ref_set(a, b) {
+    if len(a) != len(b) { return false }
+    i := 0
+    while i < len(a) {
+        if !has_ref(b, a[i]) { return false }
+        i = i + 1
+    }
+    return true
 }
 
 // A local probe that does not return 200 (older bkn without the route,
@@ -187,7 +236,23 @@ func discover_refs(coll_arg) (refs, discovered) {
         if !has_ref(refs, side[a]) { refs = append(refs, side[a]) }
         a = a + 1
     }
-    if !ok1 && !ok2 {
+    // The suite-managed store's collections table is the same source the
+    // probe reads, fetched over SQLite instead of HTTP — a second,
+    // independent channel for the phantom refs probe output intermittently
+    // produced (#109). When it answers it is authoritative: an honest
+    // probe cannot disagree with the table it serves.
+    drefs, dok := local_coll_db_refs()
+    if dok {
+        if !ok1 && !ok2 {
+            perr("machin-365: collection probe failed but the local" +
+                " store answered — discovering from bkn.db")
+        } else if !same_ref_set(refs, drefs) {
+            perr("machin-365: collection probe disagreed with the local" +
+                " store — trusting the store (" + str(len(drefs)) +
+                " ref(s))")
+        }
+        refs = drefs
+    } else if !ok1 && !ok2 {
         // both probes failed — report the latest failure
         warn_local_discovery(st2, e2)
     }
