@@ -189,6 +189,16 @@ first-sync self-provisioning working. `service reset` clears
 every identity's manifest so a wiped store is restored from remote
 rather than deleted everywhere.
 
+Markers are not kept forever: once a marker is older than the retention
+window (90 days by default, `MACHIN_365_TOMBSTONE_TTL_DAYS` overrides)
+and its target record is confirmed absent on both sides of a clean sync
+pass, the marker is collected from both stores — so the collection stays
+bounded by recent deletes instead of growing with every delete ever
+made. The trade-off is a resurrection window: a device offline longer
+than the retention window that still holds the record will not meet its
+delete and can push the record back (same failure mode as a missed
+tombstone, bounded in time).
+
 ## Layout
 
 ```
