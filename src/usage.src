@@ -35,12 +35,14 @@ func print_usage() {
     println("                               replicate local bkn <-> remote bkn")
     println("  version                       print the suite version (also: --version, -V)")
     println("  update                        install the latest GitHub release over this binary")
+    println("  telemetry [--on|--off]        anonymous usage-count status; --off opts out, --on re-enables")
     println("")
     println("env:")
     println("  MACHIN_365_HOME    suite home (default ~/.local/share/machin-365)")
     println("  MACHIN_365_CATALOG override catalog.json path")
     println("  MACHIN_365_BKN_PORT  local bkn port (default 17630)")
     println("  MACHIN_365_TOMBSTONE_TTL_DAYS  tombstone retention window (default 90)")
+    println("  MACHIN_365_TELEMETRY=0        disable anonymous usage counts")
     println("")
     println("apps are offline-first: the local bkn (service *) is the")
     println("default data layer; `sync` replicates it to the remote")
@@ -63,6 +65,7 @@ func cmd_usage(path) (s) {
     if path == "sync" { s = "usage: machin-365 sync [--collections a/b,c/d] [--watch [secs]]"  return }
     if path == "version" { s = "usage: machin-365 version"  return }
     if path == "update" { s = "usage: machin-365 update"  return }
+    if path == "telemetry" { s = "usage: machin-365 telemetry [--on|--off]"  return }
     if path == "config" { s = "usage: machin-365 config [set sync_collections a/b,c/d]"  return }
     if path == "config set" { s = "usage: machin-365 config set sync_collections a/b,c/d"  return }
     if path == "auth" { s = "usage: machin-365 auth <login|signup|member|memberships|orgs|org|switch-org|adopt-local|status|logout>"  return }
