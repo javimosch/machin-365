@@ -26,9 +26,6 @@ jobs:
       - name: Build suite binary
         run: ./build.sh
 
-      - name: Scope-strip regression test
-        run: machin test $(ls src/*.src | grep -v 'src/main.src') test/scope_test.src
-
       - name: Smoke test
         run: |
           ./build/machin-365 catalog >/dev/null && echo "catalog ok"
@@ -38,3 +35,6 @@ jobs:
           # unconfigured sync must fail loudly, not silently succeed
           ./build/machin-365 sync 2>&1 | grep -q "no remote configured" \
             || { echo "sync: expected 'no remote configured'"; exit 1; }
+
+      - name: Regression tests
+        run: ./test/run.sh
