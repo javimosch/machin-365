@@ -52,6 +52,7 @@ overwritten.
   file itself, remove all stored results when saving a change. The cost: a
   viewer that does not calculate (a file preview, for example) shows those
   cells empty (**not tried**).
+- A save runs inside `arena { }`, so that repeating it does not grow memory.
 - Sheets must calculate formulas itself to show them. What it shows for a
   function it does not support is **still to be decided**.
 
