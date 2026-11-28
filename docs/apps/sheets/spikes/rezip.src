@@ -1,0 +1,53 @@
+// DoR spike: rewrite an xlsx — unpack every entry, change one cell's value,
+// pack again with deflate_compress and crc32. Throwaway.
+func le(b, o, n) {
+    v := 0
+    i := n - 1
+    while i >= 0 { v = v * 256 + byte_at(b, o + i)  i = i - 1 }
+    return v
+}
+func hx2(v) { d := "0123456789abcdef"  return substr(d, v / 16, v / 16 + 1) + substr(d, v % 16, v % 16 + 1) }
+func num(v, n) {
+    s := ""
+    i := 0
+    while i < n { s = s + hx2(v % 256)  v = v / 256  i = i + 1 }
+    return from_hex(s)
+}
+func cat2(a, b) { return bytes_concat(a, b) }
+func main() {
+    z := read_file_bytes(env("IN"))
+    e := len(z) - 22
+    while e >= 0 && le(z, e, 4) != 101010256 { e = e - 1 }
+    count := le(z, e + 10, 2)
+    p := le(z, e + 16, 4)
+    body := bytes("")
+    dir := bytes("")
+    changed := 0
+    i := 0
+    while i < count {
+        nl := le(z, p + 28, 2)
+        nameb := bytes_sub(z, p + 46, p + 46 + nl)
+        lo := le(z, p + 42, 4)
+        start := lo + 30 + le(z, lo + 26, 2) + le(z, lo + 28, 2)
+        out := bytes_sub(z, start, start + le(z, p + 20, 4))
+        if le(z, p + 10, 2) == 8 { out = deflate_decompress(out, le(z, p + 24, 4)) }
+        if bytes_str(nameb) == "xl/worksheets/sheet1.xml" {
+            before := bytes_str(out)
+            after := replace(before, "<v>" + env("FROM") + "</v>", "<v>" + env("TO") + "</v>")
+            if after != before { changed = 1 }
+            out = bytes(after)
+        }
+        comp := deflate_compress(out, 6)
+        head := cat2(cat2(from_hex("504b030414000008080000002100"), num(crc32(out), 4)), cat2(num(len(comp), 4), num(len(out), 4)))
+        head = cat2(cat2(head, num(nl, 2)), cat2(num(0, 2), nameb))
+        cd := cat2(cat2(from_hex("504b01021400140000080800" + "00002100"), num(crc32(out), 4)), cat2(num(len(comp), 4), num(len(out), 4)))
+        cd = cat2(cat2(cd, num(nl, 2)), cat2(from_hex("000000000000000000000000"), cat2(num(len(body), 4), nameb)))
+        body = cat2(cat2(body, head), comp)
+        dir = cat2(dir, cd)
+        p = p + 46 + nl + le(z, p + 30, 2) + le(z, p + 32, 2)
+        i = i + 1
+    }
+    end_ := cat2(cat2(from_hex("504b050600000000"), cat2(num(count, 2), num(count, 2))), cat2(num(len(dir), 4), cat2(num(len(body), 4), num(0, 2))))
+    write_file_bytes(env("OUT"), cat2(cat2(body, dir), end_))
+    println("changed=" + str(changed) + " entries=" + str(count))
+}
