@@ -1,0 +1,23 @@
+// DoR spike: replace a file safely: write a temp file, fsync it, rename.
+extern "c" {
+    header "stdio.h"
+    fn rename(string, string) i32
+}
+func main() {
+    path := env("OUT")
+    gen := 0
+    while true {
+        gen = gen + 1
+        body := "begin " + str(gen) + "\n" + repeat_line(str(gen), 20000) + "end " + str(gen) + "\n"
+        tmp := path + ".tmp"
+        if write_file(tmp, body) < 0 { exit(2) }
+        if fsync(tmp) != 0 { exit(3) }
+        if rename(tmp, path) != 0 { exit(4) }
+    }
+}
+func repeat_line(s, n) {
+    out := s + "\n"
+    i := 1
+    while i < n { out = out + out  i = i * 2 }
+    return out
+}

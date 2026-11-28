@@ -1,0 +1,59 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Machin Sheets mockup</title>
+<meta name="description" content="Proposed first version of Machin 365 Sheets: main window, empty state, import, errors and safety dialogs.">
+<style>
+/* flat fills, rectangles and text only: what the desktop toolkit draws */
+:root{--page:#e9e8f0;--win:#ffffff;--bar:#f4f3f9;--line:#d9d7e6;--grid:#e6e5ee;--ink:#1c1c26;--mute:#5f5f73;--accent:#1f7a52;--sel:#1f7a5222;--bad:#b3363c;--warnbg:#fff3d6;--warn:#b9821e;--btn:#fff;color-scheme:light}
+:root[data-look=dark]{--page:#0e0e12;--win:#17171d;--bar:#202028;--line:#34343f;--grid:#2a2a34;--ink:#eeeef4;--mute:#a4a4b6;--accent:#3fb984;--sel:#3fb98433;--bad:#ee7a80;--warnbg:#332a17;--warn:#d8a33f;--btn:#26262f;color-scheme:dark}
+*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Ubuntu,sans-serif}
+.wrap{max-width:1380px;margin:0 auto;padding:22px 16px 40px}h1{font-size:20px;margin:0 0 4px}.lead{margin:0 0 14px;color:var(--mute);max-width:75ch}
+.pick{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}.pick button{font:inherit;border-radius:999px;border:1px solid var(--line);background:var(--btn);color:var(--ink);padding:6px 13px;cursor:pointer}.pick button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#fff}
+button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+#fit{width:100%;overflow:hidden}#scr{width:1280px;height:760px;transform-origin:0 0;position:relative;background:var(--win);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.title{height:36px;flex:none;background:var(--bar);display:flex;align-items:center;justify-content:center;font-weight:600;position:relative}.title span{position:absolute;right:14px;color:var(--mute);letter-spacing:9px}
+.tools{display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);flex:none}
+.b{border:1px solid var(--line);background:var(--btn);border-radius:8px;padding:6px 12px;white-space:nowrap}.b.pri{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}.sepv{width:1px;height:22px;background:var(--line);margin:0 6px}
+.fx{display:flex;border-bottom:1px solid var(--line);flex:none}.fx b{width:76px;padding:7px 12px;border-right:1px solid var(--line)}.fx span{padding:7px 12px;flex:1;font-family:ui-monospace,Consolas,monospace}
+.gridbox{flex:1;overflow:hidden}table{border-collapse:collapse;table-layout:fixed;width:1280px}th,td{border:1px solid var(--grid);height:27px;padding:0 9px;overflow:hidden;white-space:nowrap}th{background:var(--bar);font-weight:500;color:var(--mute);font-size:12px}td.n{text-align:right;font-variant-numeric:tabular-nums}td.h{font-weight:700;border-bottom:2px solid var(--line)}td.s{background:var(--sel)}td.c{outline:2px solid var(--accent);outline-offset:-2px}td.e{color:var(--bad);font-weight:600}
+.status{height:32px;flex:none;border-top:1px solid var(--line);background:var(--bar);display:flex;align-items:center;gap:22px;padding:0 14px;color:var(--mute);font-size:13px}.status i{margin-left:auto;font-style:normal}
+.shade{position:absolute;inset:36px 0 0;background:#0007;display:flex;align-items:center;justify-content:center}
+.dlg{background:var(--win);border:1px solid var(--line);border-radius:14px;padding:24px;width:520px;box-shadow:0 20px 60px #0006}.dlg h2{margin:0 0 8px;font-size:19px}.dlg p{margin:0 0 14px;color:var(--mute)}.row{display:flex;gap:10px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap}
+.banner{background:var(--warnbg);border-bottom:1px solid var(--warn);padding:9px 14px;display:flex;gap:12px;align-items:center;flex:none}.banner div{flex:1}
+.start{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px}.start h2{margin:0;font-size:28px}.start p{margin:0;color:var(--mute)}.recent{width:520px;border:1px solid var(--line);border-radius:12px}.recent div{padding:12px 16px;display:flex;justify-content:space-between}.recent div+div{border-top:1px solid var(--line)}.recent small{color:var(--mute)}
+.pop{position:absolute;left:560px;top:262px;width:330px;background:var(--win);border:1px solid var(--bad);border-radius:10px;padding:12px 14px;box-shadow:0 10px 30px #0004}
+.notes{margin-top:22px;max-width:80ch}.notes h2{font-size:16px;margin:16px 0 4px}.notes li{color:var(--mute);margin-bottom:4px}
+</style></head><body><div class="wrap">
+<h1>Machin Sheets: proposed first version</h1>
+<p class="lead">A mockup for approval, not a running app. All names and figures are invented. Pick a screen; the last button switches between light and dark.</p>
+<div class="pick" id="pick"></div><div id="fit"><div id="scr"></div></div>
+<div class="notes"><h2>Please decide</h2><ul>
+<li>Approve these screens, or say what to change.</li><li>Light or dark by default?</li>
+<li>Is the example user right: someone in a small organisation who keeps budgets and lists?</li>
+<li>Which files matter most: Excel (.xlsx), LibreOffice (.ods) or both? The mockup assumes Excel and CSV.</li></ul>
+<h2>Not in the first version</h2><ul><li>Charts, pivot tables, several sheets in one file, merged cells, macros, images, comments, printing, sync and shared editing.</li></ul></div></div>
+<script>
+const T=(title,body)=>`<div class="title">${title}<span>–▢×</span></div>${body}`;
+const tools=(dirty)=>`<div class="tools"><span class="b">New</span><span class="b">Open</span><span class="b ${dirty?'pri':''}">Save</span><span class="sepv"></span><span class="b">Undo</span><span class="b">Redo</span><span class="sepv"></span><span class="b"><b>Bold</b></span><span class="b">Number</span><span class="b">Money €</span><span class="b">Date</span><span class="sepv"></span><span class="b">Sum</span><span class="b">Sort</span><span class="b">Find</span></div>`;
+const rows=[['Date','Item','Category','Amount'],['02/11/2026','Printer paper','Office','24,90 €'],['03/11/2026','Train tickets','Travel','1 250,00 €'],['05/11/2026','Coffee, tea and milk','Kitchen','38,45 €'],['09/11/2026','Refund','Office','-12,50 €'],['12/11/2026','Room hire','Events','320,00 €'],['','','Total','1 620,85 €']];
+function grid(o={}){let h='<div class="gridbox"><table><colgroup><col style="width:54px">'+[130,260,150,140,110,110,110,110,106].map(w=>`<col style="width:${w}px">`).join('')+'</colgroup><tr><th></th>'+'ABCDEFGHI'.split('').map(c=>`<th>${c}</th>`).join('')+'</tr>';
+for(let r=0;r<22;r++){h+=`<tr><th>${r+1}</th>`;for(let c=0;c<9;c++){let v=o.empty?'':(rows[r]&&rows[r][c])||'',k=[];if(!o.empty&&r==0&&c<4)k.push('h');if(c==3&&r>0)k.push('n');if(o.sel&&c==3&&r>=1&&r<=5)k.push('s');if((o.sel&&r==6&&c==3)||(o.empty&&r==0&&c==0))k.push('c');if(o.err&&r==6&&c==3){v='Name?';k=['e','c']}h+=`<td class="${k.join(' ')}">${v}</td>`}h+='</tr>'}return h+'</table></div>'}
+const fx=(a,b)=>`<div class="fx"><b>${a}</b><span>${b}</span></div>`;
+const status=(a,b)=>`<div class="status">${a}<i>${b}</i></div>`;
+const main=(o={})=>tools(o.dirty)+(o.banner||'')+fx(o.cell||'D7',o.f??'=SUM(D2:D6)')+grid(o.g||{sel:true})+status(o.s||'<span>5 cells selected</span><span>Sum 1 620,85 €</span><span>Average 324,17 €</span>',o.r||'Saved 2 minutes ago');
+const dlg=(under,html)=>under+`<div class="shade"><div class="dlg">${html}</div></div>`;
+const name='November budget.xlsx';
+const S={
+ work:['Working',()=>T(name+' – Sheets',main())],
+ start:['First start',()=>T('Sheets',`<div class="start"><h2>Sheets</h2><p>Make a new sheet, or open an Excel or CSV file.</p><div style="display:flex;gap:10px"><span class="b pri">New sheet</span><span class="b">Open a file…</span></div><div class="recent"><div><b>November budget.xlsx</b><small>Documents · yesterday</small></div><div><b>Volunteer list.csv</b><small>Documents · last week</small></div></div></div>`)],
+ empty:['Empty sheet',()=>T('Untitled – Sheets',main({cell:'A1',f:'',g:{empty:true},s:'<span>Click a cell and start typing</span>',r:'Not saved yet'}))],
+ formula:['Formula problem',()=>T(name+' • – Sheets',main({dirty:true,f:'=SUMM(D2:D6)',g:{err:true},r:'Unsaved changes',s:'<span>1 formula needs attention</span>'})+'<div class="pop"><b>There is no function called SUMM.</b><br>Did you mean SUM?<div class="row"><span class="b">Edit formula</span><span class="b pri">Use SUM</span></div></div>')],
+ csv:['Opening a CSV',()=>T('Open Volunteer list.csv',dlg(main(),`<h2>Check how this file will open</h2><p>Columns are separated by <b>semicolons</b>, and decimals use a <b>comma</b>.</p><div class="recent" style="width:100%"><div><b>Name</b><b>Phone</b><b>Code</b></div><div><span>Alex Example</span><span>0612345678</span><span>00042</span></div><div><span>Sam Test</span><span>=not a formula</span><span>12/03</span></div></div><p style="margin-top:12px">Text stays exactly as written: leading zeros are kept, and nothing in the file is run as a formula.</p><div class="row"><span class="b">Change separator…</span><span class="b">Cancel</span><span class="b pri">Open</span></div>`))],
+ lose:['File has things we can’t keep',()=>T('Open Annual report.xlsx',dlg(main(),`<h2>Some of this file can’t be kept</h2><p>Sheets can’t keep <b>2 charts</b> and <b>merged cells</b>. If you save over the original, they will be lost.</p><div class="row"><span class="b">Cancel</span><span class="b">Open to read only</span><span class="b pri">Open a copy</span></div>`))],
+ close:['Closing with changes',()=>T(name+' • – Sheets',dlg(main({dirty:true,r:'Unsaved changes'}),`<h2>Save your changes?</h2><p>You changed “November budget” since the last save.</p><div class="row"><span class="b">Close without saving</span><span class="b">Keep editing</span><span class="b pri">Save and close</span></div>`))],
+ fail:['Saving fails',()=>T(name+' • – Sheets',main({dirty:true,r:'Not saved',banner:'<div class="banner"><div><b>Your file was not saved.</b> The disk is full. The last saved version is unchanged.</div><span class="b">Save somewhere else…</span><span class="b pri">Try again</span></div>'}))],
+ back:['After a crash',()=>T(name+' • – Sheets',main({dirty:true,r:'Recovered, not saved',banner:'<div class="banner"><div><b>We recovered unsaved work from 14:32.</b> Your saved file has not been changed.</div><span class="b">Discard it</span><span class="b pri">Keep it</span></div>'}))]};
+const $=i=>document.getElementById(i);function go(k){if(!S[k])k='work';$('scr').innerHTML=S[k][1]();[...$('pick').children].forEach(b=>b.dataset.k&&b.setAttribute('aria-pressed',b.dataset.k==k))}
+for(const k in S){const b=document.createElement('button');b.type='button';b.textContent=S[k][0];b.dataset.k=k;b.onclick=()=>go(k);$('pick').append(b)}
+const t=document.createElement('button');t.type='button';t.textContent='Light / dark';t.onclick=()=>{const r=document.documentElement;r.dataset.look=r.dataset.look=='dark'?'':'dark'};$('pick').append(t);
+function fit(){const s=Math.min(1,$('fit').clientWidth/1280);$('scr').style.transform=`scale(${s})`;$('fit').style.height=760*s+'px'}addEventListener('resize',fit);fit();go(location.hash.slice(1));
+</script></body></html>
