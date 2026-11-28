@@ -1,0 +1,148 @@
+// scope.src — local-store scope normalization for sync pulls.
+//
+// bkn keys records by (ns, coll, scope, id): a collection whose access
+// policy scopes by org/owner files each doc under the value of its scope
+// field, and "" sorts first, so an unscoped caller's GET/PATCH/DELETE
+// always lands on the scope-less row. The remote bkn stamps that field
+// (org_field = the caller's org claim, owner_field = the caller's user
+// id) on every write; when sync pulls the stamped doc back it must NOT
+// carry the stamp into the local store — the local bkn is single-user,
+// scope partitioning buys nothing, and keeping the field forks a second
+// scope-keyed row beside the app's scope-less original. Every later app
+// read/write then hits the stale shadow and LWW-pushes old content over
+// newer remote edits.
+//
+// The field to strip is the LOCAL collection's scope field, read from
+// the suite-managed bkn's own collections.access — there is no HTTP
+// route that reports a policy, and guessing field names would strip
+// genuine content. When the local endpoint is not the suite-managed
+// bkn (a MACHIN_365_LOCAL override) the policy is undiscoverable and we
+// fall back to the suite convention: org_field "org" (what
+// provision.src declares remotely) holding the caller's org claim.
+
+// sqlite_query wraps a TEXT column's JSON inside a JSON string, so its
+// quotes and backslashes arrive escaped — the same round-trip idiom
+// machin-bkn's jsonString/unescape uses to unwrap a stored document.
+func unquote(v) (s) {
+    s = v
+    if len(s) >= 2 {
+        if substr(s, 0, 1) == "\"" { s = substr(s, 1, len(s)-1) }
+    }
+}
+
+func unescape(s) (out) {
+    out = replace(replace(s, "\\\"", "\""), "\\\\", "\\")
+}
+
+// one string field out of a sqlite_query rows array; fallback on miss.
+func jrows_str(rows, path, fallback) (out) {
+    out = fallback
+    v, e := json_get(rows, path)
+    if e != "" { return }
+    out = unescape(unquote(v))
+}
+
+var sync_json_db = 0
+
+// json_remove one path from a raw doc. MFL has no generic JSON value —
+// documents are only ever rewritten by the JSON1 engine, the same trick
+// machin-bkn's stripID uses on the store side.
+func jstrip(rec, path) {
+    if sync_json_db == 0 { sync_json_db = sqlite_open(":memory:") }
+    if sync_json_db == 0 { return rec }
+    rows := sqlite_query(sync_json_db, "SELECT json_remove(?, ?) AS d",
+        []string{rec, path})
+    if rows == "" || rows == "[]" { return rec }
+    return jrows_str(rows, "[0].d", rec)
+}
+
+// scopeFieldFor, mirrored: a policy scoping by org keys on org_field, one
+// scoping by owner on owner_field; org wins when both appear. "" means
+// the collection keys every row under the unscoped bucket — nothing to
+// strip, a pulled doc cannot fork.
+func access_scope_field(acc) (f) {
+    f = ""
+    org := false
+    own := false
+    verbs := []string{"read", "create", "update", "delete"}
+    i := 0
+    while i < len(verbs) {
+        a := jstr(acc, ".rules." + verbs[i])
+        if a == "org" { org = true }
+        if a == "owner" { own = true }
+        i = i + 1
+    }
+    if org { f = jstr(acc, ".org_field") }
+    if f == "" { if own { f = jstr(acc, ".owner_field") } }
+}
+
+// Per-pass cache of local_scope_field lookups — one sqlite open per ref
+// per pass, not per pulled document. Reset alongside sync_provision_tried.
+var sync_scope_cache = make(map[string]string)
+
+// The local collection's scope field for ref. Returns the field name to
+// strip, "" when the collection provably keys everything under '', or
+// "?" when the policy cannot be discovered (foreign local endpoint,
+// unreadable database, pre-policy schema) — the caller then falls back
+// to convention-based stripping.
+func local_scope_field(ref) {
+    if has(sync_scope_cache, ref) { return sync_scope_cache[ref] }
+    f := discover_scope_field(ref)
+    sync_scope_cache[ref] = f
+    return f
+}
+
+func discover_scope_field(ref) {
+    if sync_local != local_url() { return "?" }
+    p := bkn_db()
+    if file_size(p) <= 0 { return "?" }
+    at := index(ref, "/")
+    if at <= 0 { return "?" }
+    db := sqlite_open(p)
+    if db == 0 { return "?" }
+    f := scope_field_in_db(db, substr(ref, 0, at), substr(ref, at + 1, len(ref)))
+    sqlite_close(db)
+    return f
+}
+
+// scope_field_in_db reads one collection's declared access policy and
+// mirrors bkn's scopeFieldFor. "?" when the query itself fails — no
+// collections table, or a pre-policy schema without the access column.
+func scope_field_in_db(db, ns, coll) {
+    rows := sqlite_query(db,
+        "SELECT COALESCE(access, '{}') AS a FROM collections WHERE ns=? AND name=?",
+        []string{ns, coll})
+    if rows == "" { return "?" }
+    return access_scope_field(jrows_str(rows, "[0].a", "{}"))
+}
+
+// Undiscoverable-policy fallback: strip a candidate tenancy field only
+// when its value IS the caller's claim — the remote stamps scopeValue,
+// so a match is the stamp itself, while a content field that merely
+// looks tenancy-ish is left alone. An org-less or non-JWT token strips
+// nothing it cannot verify.
+func strip_scope_stamps(rec) {
+    org := jwt_org(sync_remote_tok)
+    if org != "" && jstr(rec, ".org") == org { rec = jstrip(rec, "$.org") }
+    sub := jwt_claim(sync_remote_tok, ".sub")
+    if sub == "" { return rec }
+    names := []string{"owner", "owner_id", "user_id", "uid", "sub",
+        "created_by", "author_id", "assignee_id", "holder", "account_id", "member_id"}
+    i := 0
+    while i < len(names) {
+        if jstr(rec, "." + names[i]) == sub { rec = jstrip(rec, "$." + names[i]) }
+        i = i + 1
+    }
+    return rec
+}
+
+// Strip whatever the LOCAL bkn would file under a non-'' scope, so a
+// pulled doc upserts the app's scope-less row instead of forking a
+// second scope-keyed copy. Pushes are untouched — the remote re-stamps
+// tenancy on write.
+func localize_doc(rec, ref) {
+    f := local_scope_field(ref)
+    if f == "?" { return strip_scope_stamps(rec) }
+    if f == "" { return rec }
+    return jstrip(rec, "$." + f)
+}

@@ -123,7 +123,11 @@ func push_mtime(rec, ref) {
 // Mirroring is safe: it is the same fetched content with a sane
 // _mtime, and both sides then hold identical mtimes so the next pass
 // reads "same" instead of re-fighting the raw stamp.
+// A pulled doc is localized first (scope.src): the remote's tenancy
+// stamp must not fork a second scope-keyed row in the single-user
+// local store. Pushes are untouched — the remote re-stamps on write.
 func sync_write_rec(ref, rec, to_remote) (ok) {
+    if !to_remote { rec = localize_doc(rec, ref) }
     doc := stamp(rec, ref)
     if to_remote {
         ok = post_doc(sync_remote, sync_remote_tok, ref, doc, "remote")

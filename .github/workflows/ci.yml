@@ -26,6 +26,9 @@ jobs:
       - name: Build suite binary
         run: ./build.sh
 
+      - name: Scope-strip regression test
+        run: machin test $(ls src/*.src | grep -v 'src/main.src') test/scope_test.src
+
       - name: Smoke test
         run: |
           ./build/machin-365 catalog >/dev/null && echo "catalog ok"
