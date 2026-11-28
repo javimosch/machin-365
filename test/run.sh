@@ -14,4 +14,8 @@ cd "$(dirname "$0")/.."
 if [ ! -f src/catalog_gen.src ] || [ ! -f src/version_gen.src ]; then ./build.sh >/dev/null; fi
 export MACHIN_365_HOME="$(mktemp -d /tmp/m365-test-home.XXXXXX)"
 SRCS=$(ls src/*.src | grep -v '/main\.src$')
-machin test $SRCS test/*.src
+# one run per test file: each defines main(), so they cannot be composed
+for t in test/*_test.src; do
+    echo "=== $t"
+    machin test $SRCS "$t"
+done
