@@ -70,51 +70,103 @@ func entry_index(es, name) {
 }
 
 // ---- XML scanning over bytes ----
+// Walking a sheet must allocate nothing: this runs a few million times and a
+// goroutine frees nothing until it returns. Names are compared as numbers and
+// attributes are found in place; a string is built only when somebody wants it.
 func str_of(b, a, z) { return bytes_str(bytes_sub(b, a, z)) }
 
-func starts_at(b, i, lit) {
-    l := bytes(lit)
+func starts_at(b, i, l) {
     if i + len(l) > len(b) { return false }
     j := 0
     while j < len(l) { if byte_at(b, i + j) != byte_at(l, j) { return false }  j = j + 1 }
     return true
 }
 
-func find_lit(b, from, lit) {
-    first := byte_at(bytes(lit), 0)
+func find_bytes(b, from, l) {
+    first := byte_at(l, 0)
     i := from
     n := len(b)
     while i < n {
-        if byte_at(b, i) == first && starts_at(b, i, lit) { return i }
+        if byte_at(b, i) == first && starts_at(b, i, l) { return i }
         i = i + 1
     }
     return -1
 }
 
+func find_lit(b, from, lit) { return find_bytes(b, from, bytes(lit)) }
+
+var N_SI = 0
+var N_T = 0
+var N_RPH = 0
+var N_ROW = 0
+var N_C = 0
+var N_V = 0
+var N_F = 0
+var N_IS = 0
+var N_SHEETDATA = 0
+var LIT_COMMENT = bytes("")
+var LIT_CDATA = bytes("")
+var LIT_COMMENT_END = bytes("")
+var LIT_CDATA_END = bytes("")
+var LIT_GT = bytes("")
+var A_R = bytes("")
+var A_S = bytes("")
+var A_TT = bytes("")
+var A_SI = bytes("")
+
+func name_code(s) {
+    b := bytes(s)
+    h := 0
+    i := 0
+    while i < len(b) { h = h * 131 + byte_at(b, i)  i = i + 1 }
+    return h
+}
+
+func init_names() {
+    N_SI = name_code("si")  N_T = name_code("t")  N_RPH = name_code("rPh")  N_ROW = name_code("row")
+    N_C = name_code("c")  N_V = name_code("v")  N_F = name_code("f")  N_IS = name_code("is")
+    N_SHEETDATA = name_code("sheetData")
+    LIT_COMMENT = bytes("<!--")  LIT_CDATA = bytes("<![CDATA[")
+    LIT_COMMENT_END = bytes("-->")  LIT_CDATA_END = bytes("]]>")  LIT_GT = bytes(">")
+    A_R = bytes("r")  A_S = bytes("s")  A_TT = bytes("t")  A_SI = bytes("si")
+}
+
 type Tag struct {
     at int          // offset of '<'
     end_ int        // offset after '>'
-    name string     // local name, prefix removed
+    name int        // code of the local name
+    name_at int     // where the local name starts
     closing bool
     empty bool      // <a/>
 }
 
+func is_space(c) { return c == 32 || c == 9 || c == 10 || c == 13 }
+
 // the next element tag at or after pos; at = -1 when there is none
 func next_tag(b, pos) (t) {
-    t = Tag{at: -1, end_: len(b), name: "", closing: false, empty: false}
+    t = Tag{at: -1, end_: len(b), name: 0, name_at: 0, closing: false, empty: false}
     n := len(b)
     i := pos
     while i < n {
         if byte_at(b, i) != 60 { i = i + 1  continue }
-        if starts_at(b, i, "<!--") { i = find_lit(b, i, "-->") + 3  continue }
-        if starts_at(b, i, "<![CDATA[") { i = find_lit(b, i, "]]>") + 3  continue }
-        if starts_at(b, i, "<?") || starts_at(b, i, "<!") { i = find_lit(b, i, ">") + 1  continue }
+        c1 := byte_at(b, i + 1)
+        if c1 == 33 || c1 == 63 {
+            if starts_at(b, i, LIT_COMMENT) { i = find_bytes(b, i, LIT_COMMENT_END) + 3  continue }
+            if starts_at(b, i, LIT_CDATA) { i = find_bytes(b, i, LIT_CDATA_END) + 3  continue }
+            i = find_bytes(b, i, LIT_GT) + 1
+            continue
+        }
         j := i + 1
         closing := false
         if byte_at(b, j) == 47 { closing = true  j = j + 1 }
+        h := 0
         ns := j
-        while j < n { c := byte_at(b, j)  if c == 32 || c == 47 || c == 62 || c == 9 || c == 10 || c == 13 { break }  if c == 58 { ns = j + 1 }  j = j + 1 }
-        name := str_of(b, ns, j)
+        while j < n {
+            c := byte_at(b, j)
+            if c == 47 || c == 62 || is_space(c) { break }
+            if c == 58 { h = 0  ns = j + 1 } else { h = h * 131 + c }
+            j = j + 1
+        }
         // '>' may appear inside a quoted attribute value
         q := 0
         while j < n {
@@ -122,9 +174,43 @@ func next_tag(b, pos) (t) {
             if q != 0 { if c == q { q = 0 } } else if c == 34 || c == 39 { q = c } else if c == 62 { break }
             j = j + 1
         }
-        t = Tag{at: i, end_: j + 1, name: name, closing: closing, empty: byte_at(b, j - 1) == 47}
+        t = Tag{at: i, end_: j + 1, name: h, name_at: ns, closing: closing, empty: byte_at(b, j - 1) == 47}
         return
     }
+}
+
+// where an attribute's value lies in the tag: [a, z), or a = -1
+func attr_span(b, t, name) (a, z) {
+    a = -1
+    z = -1
+    i := t.name_at
+    n := t.end_ - 1
+    while i < n && !is_space(byte_at(b, i)) { i = i + 1 }
+    while i < n {
+        while i < n && (is_space(byte_at(b, i)) || byte_at(b, i) == 47) { i = i + 1 }
+        ks := i
+        while i < n && byte_at(b, i) != 61 && !is_space(byte_at(b, i)) { i = i + 1 }
+        ke := i
+        while i < n && byte_at(b, i) != 34 && byte_at(b, i) != 39 { i = i + 1 }
+        if i >= n { return }
+        q := byte_at(b, i)
+        i = i + 1
+        vs := i
+        while i < n && byte_at(b, i) != q { i = i + 1 }
+        if ke - ks == len(name) && starts_at(b, ks, name) {
+            a = vs
+            z = i
+            return
+        }
+        i = i + 1
+    }
+}
+
+func int_in(b, a, z) {
+    v := 0
+    i := a
+    while i < z { c := byte_at(b, i)  if c >= 48 && c <= 57 { v = v * 10 + c - 48 }  i = i + 1 }
+    return v
 }
 
 func utf8_of(cp) {
@@ -171,15 +257,11 @@ func text_of(b, a, z) (out) {
     out = entities(substr(s, 0, c)) + substr(s, c + 9, d) + entities(substr(s, d + 3, len(s)))
 }
 
+// an attribute as a string — for the few tags (workbook, styles) that need one
 func attr(b, t, name) {
-    s := str_of(b, t.at, t.end_)
-    s = replace(replace(replace(s, "\n", " "), "\t", " "), "\r", " ")
-    k := index(s, " " + name + "=")
-    if k < 0 { return "" }
-    rest := substr(s, k + len(name) + 2, len(s))
-    q := substr(rest, 0, 1)
-    rest = substr(rest, 1, len(rest))
-    return entities(substr(rest, 0, index(rest, q)))
+    a, z := attr_span(b, t, bytes(name))
+    if a < 0 { return "" }
+    return entities(str_of(b, a, z))
 }
 
 // ---- shared strings and styles ----
@@ -187,18 +269,29 @@ func shared_strings(b) (out) {
     out = []string{}
     pos := 0
     cur := []string{}
+    parts := 0
+    one := ""
     phon := false
     open_t := -1
     while true {
         t := next_tag(b, pos)
         if t.at < 0 { return }
         pos = t.end_
-        if t.name == "si" && !t.closing { cur = []string{}  if t.empty { out = append(out, "") } }
-        if t.name == "si" && t.closing { out = append(out, join(cur, "")) }
-        if t.name == "rPh" && !t.empty { phon = !t.closing }
-        if t.name == "t" && !phon {
+        if t.name == N_SI && !t.closing { parts = 0  one = ""  if t.empty { out = append(out, "") } }
+        if t.name == N_SI && t.closing { if parts > 1 { out = append(out, join(cur, "")) } else { out = append(out, one) } }
+        if t.name == N_RPH && !t.empty { phon = !t.closing }
+        if t.name == N_T && !phon {
             if !t.closing && !t.empty { open_t = t.end_ }
-            if t.closing && open_t >= 0 { cur = append(cur, text_of(b, open_t, t.at))  open_t = -1 }
+            if t.closing && open_t >= 0 {
+                piece := text_of(b, open_t, t.at)
+                // a list only for text in several runs: most strings have one
+                if parts == 0 { one = piece } else {
+                    if parts == 1 { cur = []string{one} }
+                    cur = append(cur, piece)
+                }
+                parts = parts + 1
+                open_t = -1
+            }
         }
     }
 }
@@ -222,13 +315,16 @@ func date_styles(b) (out) {
     codes := make(map[string]string)
     pos := 0
     in_xfs := false
+    n_numfmt := name_code("numFmt")
+    n_xfs := name_code("cellXfs")
+    n_xf := name_code("xf")
     while true {
         t := next_tag(b, pos)
         if t.at < 0 { return }
         pos = t.end_
-        if t.name == "numFmt" && !t.closing { codes[attr(b, t, "numFmtId")] = attr(b, t, "formatCode") }
-        if t.name == "cellXfs" { in_xfs = !t.closing }
-        if in_xfs && t.name == "xf" && !t.closing {
+        if t.name == n_numfmt && !t.closing { codes[attr(b, t, "numFmtId")] = attr(b, t, "formatCode") }
+        if t.name == n_xfs { in_xfs = !t.closing }
+        if in_xfs && t.name == n_xf && !t.closing {
             id := attr(b, t, "numFmtId")
             code := ""
             if has(codes, id) { code = codes[id] }
@@ -303,19 +399,27 @@ func shift_formula(f, dr, dc) (out) {
     out = join(parts, "")
 }
 
-// ---- cells ----
+// ---- cells: numbers only, pointing into the sheet's XML ----
+var K_NUMBER = 0
+var K_SHARED = 1
+var K_INLINE = 2
+var K_STR = 3
+var K_BOOL = 4
+var K_ERR = 5
+
 type Cell struct {
-    ref string
+    row int
+    col int
     at int
     end_ int
     style int
-    kind string       // t attribute
-    v string
-    has_v bool
-    inline string
-    f string
-    ftype string
-    si string
+    kind int
+    v_at int        // -1: no <v>
+    v_end int
+    f_at int        // formula text; f_end = f_at when the tag is empty
+    f_end int
+    shared int      // shared formula index, -1 when not shared
+    is_at int       // inline string: the <c> body
 }
 
 type Row struct { num int  at int  end_ int  close_at int  empty bool }
@@ -330,7 +434,24 @@ type Sheet struct {
 }
 
 func blank_cell() {
-    return Cell{ref: "", at: 0, end_: 0, style: 0, kind: "", v: "", has_v: false, inline: "", f: "", ftype: "", si: ""}
+    return Cell{row: 0, col: 0, at: 0, end_: 0, style: 0, kind: 0, v_at: -1, v_end: -1, f_at: 0, f_end: 0, shared: -1, is_at: -1}
+}
+
+func cell_ref_in(b, a, z) (col, row) {
+    col = 0
+    row = 0
+    i := a
+    while i < z { c := byte_at(b, i)  if c >= 65 && c <= 90 { col = col * 26 + c - 64 } else if c >= 48 && c <= 57 { row = row * 10 + c - 48 }  i = i + 1 }
+}
+
+func kind_in(b, a, z) {
+    if a < 0 { return K_NUMBER }
+    c := byte_at(b, a)
+    if c == 115 { if z - a == 1 { return K_SHARED }  return K_STR }
+    if c == 105 { return K_INLINE }
+    if c == 98 { return K_BOOL }
+    if c == 101 { return K_ERR }
+    return K_NUMBER
 }
 
 func scan_sheet(b) (s) {
@@ -344,26 +465,22 @@ func scan_sheet(b) (s) {
     cur := blank_cell()
     row := Row{num: 0, at: 0, end_: 0, close_at: 0, empty: false}
     in_c := false
-    in_is := false
-    phon := false
-    mark := -1
-    inl := []string{}
+    v_mark := -1
     while true {
         t := next_tag(b, pos)
         if t.at < 0 { break }
         pos = t.end_
-        if t.name == "sheetData" {
+        if t.name == N_SHEETDATA {
             if !t.closing {
                 data_at = t.at
-                tg := str_of(b, t.at + 1, t.end_)
-                k := index(tg, "sheetData")
-                prefix = substr(tg, 0, k)
+                prefix = str_of(b, t.at + 1, t.name_at)
                 if t.empty { data_empty = true  data_close = t.end_ }
             } else { data_close = t.at }
         }
-        if t.name == "row" {
+        if t.name == N_ROW {
             if !t.closing {
-                row = Row{num: parse_int(attr(b, t, "r")), at: t.at, end_: t.end_, close_at: -1, empty: t.empty}
+                a, z := attr_span(b, t, A_R)
+                row = Row{num: int_in(b, a, z), at: t.at, end_: t.end_, close_at: -1, empty: t.empty}
                 if t.empty { rows = append(rows, row) }
             } else {
                 row.close_at = t.at
@@ -371,60 +488,92 @@ func scan_sheet(b) (s) {
                 rows = append(rows, row)
             }
         }
-        if t.name == "c" {
+        if t.name == N_C {
             if !t.closing {
                 cur = blank_cell()
-                cur.ref = attr(b, t, "r")
+                a, z := attr_span(b, t, A_R)
+                cl, rw := cell_ref_in(b, a, z)
+                cur.col = cl
+                cur.row = rw
+                a2, z2 := attr_span(b, t, A_TT)
+                cur.kind = kind_in(b, a2, z2)
+                a3, z3 := attr_span(b, t, A_S)
+                if a3 >= 0 { cur.style = int_in(b, a3, z3) }
                 cur.at = t.at
                 cur.end_ = t.end_
-                cur.kind = attr(b, t, "t")
-                cur.style = parse_int(attr(b, t, "s"))
-                inl = []string{}
+                cur.is_at = t.end_
                 if t.empty { cells = append(cells, cur) } else { in_c = true }
             } else {
                 cur.end_ = t.end_
-                cur.inline = join(inl, "")
                 cells = append(cells, cur)
                 in_c = false
             }
         }
         if !in_c { continue }
-        if t.name == "is" { in_is = !t.closing && !t.empty }
-        if t.name == "rPh" && !t.empty { phon = !t.closing }
-        if t.name == "v" {
-            if !t.closing { cur.has_v = true  if !t.empty { mark = t.end_ } } else { cur.v = text_of(b, mark, t.at) }
-        }
-        if t.name == "f" {
+        if t.name == N_V {
             if !t.closing {
-                cur.ftype = attr(b, t, "t")
-                cur.si = attr(b, t, "si")
-                if !t.empty { mark = t.end_ }
-            } else { cur.f = text_of(b, mark, t.at) }
+                cur.v_at = t.end_
+                cur.v_end = t.end_
+            } else { cur.v_end = t.at }
         }
-        if in_is && t.name == "t" && !phon {
-            if !t.closing { if !t.empty { mark = t.end_ } } else { inl = append(inl, text_of(b, mark, t.at)) }
+        if t.name == N_F {
+            if !t.closing {
+                a4, z4 := attr_span(b, t, A_TT)
+                if a4 >= 0 && z4 - a4 == 6 && byte_at(b, a4) == 115 {
+                    a5, z5 := attr_span(b, t, A_SI)
+                    cur.shared = int_in(b, a5, z5)
+                }
+                cur.f_at = t.end_
+                cur.f_end = t.end_
+                if t.empty { v_mark = -2 }
+            } else { cur.f_end = t.at }
         }
     }
     s = Sheet{cells: cells, rows: rows, data_at: data_at, data_close: data_close, data_empty: data_empty, prefix: prefix}
 }
 
-// shared formulas: index of the master cell for each si
+func has_formula(c) { return c.f_end > c.f_at || c.shared >= 0 }
+
+func ref_of(c) { return col_name(c.col) + str(c.row) }
+
+func value_text(b, c) {
+    if c.v_at < 0 { return "" }
+    return text_of(b, c.v_at, c.v_end)
+}
+
+func inline_text(b, c) {
+    out := []string{}
+    pos := c.is_at
+    phon := false
+    mark := -1
+    while true {
+        t := next_tag(b, pos)
+        if t.at < 0 || t.at >= c.end_ { break }
+        pos = t.end_
+        if t.name == N_RPH && !t.empty { phon = !t.closing }
+        if t.name == N_T && !phon {
+            if !t.closing { if !t.empty { mark = t.end_ } } else { out = append(out, text_of(b, mark, t.at)) }
+        }
+    }
+    return join(out, "")
+}
+
+// shared formulas: index of the master cell for each shared index
 func masters(cells) (m) {
-    m = make(map[string]int)
+    m = make(map[int]int)
     i := 0
     while i < len(cells) {
-        if cells[i].ftype == "shared" && cells[i].f != "" { m[cells[i].si] = i }
+        if cells[i].shared >= 0 && cells[i].f_end > cells[i].f_at { m[cells[i].shared] = i }
         i = i + 1
     }
 }
 
-func formula_of(cells, m, i) {
+func formula_of(b, cells, m, i) {
     c := cells[i]
-    if c.ftype != "shared" || c.f != "" { return c.f }
-    if !has(m, c.si) { return "" }
-    mc, mr := split_ref(cells[m[c.si]].ref)
-    cc, cr := split_ref(c.ref)
-    return shift_formula(cells[m[c.si]].f, cr - mr, cc - mc)
+    if c.f_end > c.f_at { return text_of(b, c.f_at, c.f_end) }
+    if c.shared < 0 || !has(m, c.shared) { return "" }
+    mc := cells[m[c.shared]]
+    return shift_formula(text_of(b, mc.f_at, mc.f_end), c.row - mc.row, c.col - mc.col)
 }
 
 // days since 1970-01-01 -> yyyy-mm-dd (civil calendar)
@@ -445,8 +594,6 @@ func iso_date(days) {
     return str(y) + "-" + ms + "-" + ds
 }
 
-func esc_out(s) { return replace(replace(replace(s, "\\", "\\\\"), "\t", "\\t"), "\n", "\\n") }
-
 // workbook.xml + its rels -> sheet names and entry paths, in order
 func sheet_list(es) (names, paths) {
     names = []string{}
@@ -454,19 +601,21 @@ func sheet_list(es) (names, paths) {
     rel := es[entry_index(es, "xl/_rels/workbook.xml.rels")].data
     target := make(map[string]string)
     pos := 0
+    n_rel := name_code("Relationship")
     while true {
         t := next_tag(rel, pos)
         if t.at < 0 { break }
         pos = t.end_
-        if t.name == "Relationship" && !t.closing { target[attr(rel, t, "Id")] = attr(rel, t, "Target") }
+        if t.name == n_rel && !t.closing { target[attr(rel, t, "Id")] = attr(rel, t, "Target") }
     }
     wb := es[entry_index(es, "xl/workbook.xml")].data
     pos = 0
+    n_sheet := name_code("sheet")
     while true {
         t := next_tag(wb, pos)
         if t.at < 0 { return }
         pos = t.end_
-        if t.name == "sheet" && !t.closing {
+        if t.name == n_sheet && !t.closing {
             names = append(names, attr(wb, t, "name"))
             id := attr(wb, t, "r:id")
             p := target[id]
@@ -476,7 +625,53 @@ func sheet_list(es) (names, paths) {
     }
 }
 
-func read_all(es) {
+// ---- what an app keeps in memory: one value per cell ----
+// Text cells point at the shared strings (stored once); only inline strings,
+// formula text results and formulas make new strings.
+type Value struct { row int  col int  kind int  num float  text string  formula string }
+
+var KIND_NAMES = []string{}
+var V_NUMBER = 0
+var V_TEXT = 1
+var V_DATE = 2
+var V_BOOL = 3
+var V_ERR = 4
+var V_EMPTY = 5
+
+func load_sheet(b, sst, dates) (vals) {
+    s := scan_sheet(b)
+    m := masters(s.cells)
+    vals = []Value{}
+    i := 0
+    while i < len(s.cells) {
+        c := s.cells[i]
+        kind := V_NUMBER
+        num_ := 0.0
+        text := ""
+        if c.kind == K_SHARED { kind = V_TEXT  text = sst[int_in(b, c.v_at, c.v_end)] } else if c.kind == K_INLINE { kind = V_TEXT  text = inline_text(b, c) } else if c.kind == K_STR { kind = V_TEXT  text = value_text(b, c) } else if c.kind == K_BOOL { kind = V_BOOL  text = value_text(b, c) } else if c.kind == K_ERR { kind = V_ERR  text = value_text(b, c) } else if c.v_at < 0 { kind = V_EMPTY } else {
+            // the number's own text is kept too, so saving cannot change it
+            text = value_text(b, c)
+            num_ = parse_float(text)
+            if c.style < len(dates) && dates[c.style] { kind = V_DATE }
+        }
+        f := ""
+        if has_formula(c) { f = formula_of(b, s.cells, m, i) }
+        vals = append(vals, Value{row: c.row, col: c.col, kind: kind, num: num_, text: text, formula: f})
+        i = i + 1
+    }
+}
+
+func esc_out(s) {
+    if index(s, "\\") >= 0 { s = replace(s, "\\", "\\\\") }
+    if index(s, "\t") >= 0 { s = replace(s, "\t", "\\t") }
+    if index(s, "\n") >= 0 { s = replace(s, "\n", "\\n") }
+    return s
+}
+
+// load every sheet; then, for the test harness only, write them out as text,
+// a block at a time inside an arena so the dump does not count as app memory
+func read_all(es, out_path) {
+    KIND_NAMES = []string{"number", "text", "date", "bool", "error", "empty"}
     sst := []string{}
     si := entry_index(es, "xl/sharedStrings.xml")
     if si >= 0 { sst = shared_strings(es[si].data) }
@@ -484,29 +679,40 @@ func read_all(es) {
     st := entry_index(es, "xl/styles.xml")
     if st >= 0 { dates = date_styles(es[st].data) }
     names, paths := sheet_list(es)
-    out := []string{}
+    total := 0
+    off := 0
+    write_file(out_path, "")
     k := 0
     while k < len(names) {
-        s := scan_sheet(es[entry_index(es, paths[k])].data)
-        m := masters(s.cells)
+        vals := load_sheet(es[entry_index(es, paths[k])].data, sst, dates)
+        total = total + len(vals)
         i := 0
-        while i < len(s.cells) {
-            c := s.cells[i]
-            f := formula_of(s.cells, m, i)
-            kind := "number"
-            v := c.v
-            if c.kind == "s" { kind = "text"  v = sst[parse_int(c.v)] } else if c.kind == "inlineStr" { kind = "text"  v = c.inline } else if c.kind == "str" { kind = "text" } else if c.kind == "b" { kind = "bool" } else if c.kind == "e" { kind = "error" } else if !c.has_v { kind = "empty" } else if c.style < len(dates) && dates[c.style] { kind = "date"  v = iso_date(int(floor(parse_float(c.v))) - 25569) }
-            out = append(out, esc_out(names[k]) + "\t" + c.ref + "\t" + kind + "\t" + esc_out(v) + "\t" + esc_out(f))
-            i = i + 1
+        while i < len(vals) {
+            arena {
+                lines := []string{}
+                end_ := i + 1000
+                if end_ > len(vals) { end_ = len(vals) }
+                j := i
+                while j < end_ {
+                    v := vals[j]
+                    shown := v.text
+                    if v.kind == V_DATE { shown = iso_date(int(floor(v.num)) - 25569) }
+                    lines = append(lines, esc_out(names[k]) + "\t" + col_name(v.col) + str(v.row) + "\t" + KIND_NAMES[v.kind] + "\t" + esc_out(shown) + "\t" + esc_out(v.formula))
+                    j = j + 1
+                }
+                blob := bytes(join(lines, "\n") + "\n")
+                w := write_file_at(out_path, off, blob)
+                off = off + len(blob)
+            }
+            i = i + 1000
         }
         k = k + 1
     }
-    return out
+    return total
 }
 
 // ---- writing ----
 type Edit struct { ref string  op string  val string  col int  row int }
-type Splice struct { at int  end_ int  text string }
 
 func xml_escape(s) {
     s = replace(replace(replace(s, "&", "&amp;"), "<", "&lt;"), ">", "&gt;")
@@ -522,40 +728,109 @@ func cell_xml(p, ref, style, op, val) {
     return open + "/>"
 }
 
-// edits must be sorted by (row, column)
-func edit_sheet(b, edits) {
+// The output is a list of pieces joined once. Copying the whole sheet again for
+// every edit is what made 2,000 edits cost gigabytes.
+
+// first cell at or after (row, col); cells are in file order
+func lower_bound(cells, row, col) {
+    lo := 0
+    hi := len(cells)
+    while lo < hi {
+        mid := (lo + hi) / 2
+        c := cells[mid]
+        if c.row < row || (c.row == row && c.col < col) { lo = mid + 1 } else { hi = mid }
+    }
+    return lo
+}
+
+func first_row_at_or_after(rows, num_) {
+    lo := 0
+    hi := len(rows)
+    while lo < hi {
+        mid := (lo + hi) / 2
+        if rows[mid].num < num_ { lo = mid + 1 } else { hi = mid }
+    }
+    return lo
+}
+
+type Splice struct { at int  end_ int  text string }
+
+func edit_before(a, b) { return a.row < b.row || (a.row == b.row && a.col <= b.col) }
+
+// merge sort by (row, column); equal cells keep their order
+func sort_edits(es) {
+    if len(es) < 2 { return es }
+    half := len(es) / 2
+    left := []Edit{}
+    right := []Edit{}
+    i := 0
+    while i < len(es) { if i < half { left = append(left, es[i]) } else { right = append(right, es[i]) }  i = i + 1 }
+    left = sort_edits(left)
+    right = sort_edits(right)
+    out := []Edit{}
+    a := 0
+    z := 0
+    while a < len(left) || z < len(right) {
+        if z >= len(right) || (a < len(left) && edit_before(left[a], right[z])) { out = append(out, left[a])  a = a + 1 } else { out = append(out, right[z])  z = z + 1 }
+    }
+    return out
+}
+
+// The pieces are built in one pass, so the edits must be in file order: they
+// are sorted here (unsorted ones were silently dropped). Of two edits to one
+// cell, the later wins.
+func edit_sheet(b, unsorted, drop) {
+    sorted := sort_edits(unsorted)
+    edits := []Edit{}
+    d0 := 0
+    while d0 < len(sorted) {
+        if d0 + 1 >= len(sorted) || sorted[d0 + 1].row != sorted[d0].row || sorted[d0 + 1].col != sorted[d0].col { edits = append(edits, sorted[d0]) }
+        d0 = d0 + 1
+    }
     s := scan_sheet(b)
     m := masters(s.cells)
     p := s.prefix
-    where := make(map[string]int)
-    i := 0
-    while i < len(s.cells) { where[s.cells[i].ref] = i  i = i + 1 }
-    edited := make(map[string]int)
-    i = 0
-    while i < len(edits) { edited[edits[i].ref] = i  i = i + 1 }
     sp := []Splice{}
-    // a shared formula whose master is replaced: give each dependent its own copy
-    i = 0
-    while i < len(s.cells) {
-        c := s.cells[i]
-        if c.ftype == "shared" && c.f == "" && !has(edited, c.ref) && has(m, c.si) && has(edited, s.cells[m[c.si]].ref) {
-            sp = append(sp, Splice{at: c.at, end_: c.end_, text: cell_xml(p, c.ref, c.style, "formula", formula_of(s.cells, m, i))})
+    edited := make(map[int]int)      // cell index -> edit
+    lost := make(map[int]int)        // shared index whose master is replaced
+    i := 0
+    while i < len(edits) {
+        k := lower_bound(s.cells, edits[i].row, edits[i].col)
+        if k < len(s.cells) && s.cells[k].row == edits[i].row && s.cells[k].col == edits[i].col {
+            edited[k] = i
+            c := s.cells[k]
+            if c.shared >= 0 && has(m, c.shared) && m[c.shared] == k { lost[c.shared] = 1 }
         }
         i = i + 1
+    }
+    // a shared formula whose master is replaced: give each dependent its own copy
+    deps := []Splice{}
+    if len(lost) > 0 || drop {
+        i = 0
+        while i < len(s.cells) {
+            c := s.cells[i]
+            if !has(edited, i) {
+                if c.shared >= 0 && c.f_end == c.f_at && has(lost, c.shared) {
+                    deps = append(deps, Splice{at: c.at, end_: c.end_, text: cell_xml(p, ref_of(c), c.style, "formula", formula_of(b, s.cells, m, i))})
+                } else if drop && has_formula(c) && c.v_at >= 0 {
+                    deps = append(deps, Splice{at: c.at, end_: c.end_, text: without_result(b, c, p)})
+                }
+            }
+            i = i + 1
+        }
     }
     i = 0
     while i < len(edits) {
         e := edits[i]
-        if has(where, e.ref) {
-            c := s.cells[where[e.ref]]
+        k := lower_bound(s.cells, e.row, e.col)
+        if k < len(s.cells) && s.cells[k].row == e.row && s.cells[k].col == e.col {
+            c := s.cells[k]
             sp = append(sp, Splice{at: c.at, end_: c.end_, text: cell_xml(p, e.ref, c.style, e.op, e.val)})
             i = i + 1
             continue
         }
-        r := -1
-        k := 0
-        while k < len(s.rows) { if s.rows[k].num == e.row { r = k }  k = k + 1 }
-        if r >= 0 {
+        r := first_row_at_or_after(s.rows, e.row)
+        if r < len(s.rows) && s.rows[r].num == e.row {
             rw := s.rows[r]
             if rw.empty {
                 tg := str_of(b, rw.at, rw.end_ - 2)
@@ -565,74 +840,61 @@ func edit_sheet(b, edits) {
                 continue
             }
             at := rw.close_at
-            k = 0
-            while k < len(s.cells) {
-                cc, cr := split_ref(s.cells[k].ref)
-                if cr == e.row && cc > e.col && s.cells[k].at < at { at = s.cells[k].at }
-                k = k + 1
-            }
+            if k < len(s.cells) && s.cells[k].row == e.row { at = s.cells[k].at }
             sp = append(sp, Splice{at: at, end_: at, text: cell_xml(p, e.ref, 0, e.op, e.val)})
             i = i + 1
             continue
         }
         // a new row: all its edits together, before the first later row
         at := s.data_close
-        k = len(s.rows) - 1
-        while k >= 0 { if s.rows[k].num > e.row { at = s.rows[k].at }  k = k - 1 }
+        if r < len(s.rows) { at = s.rows[r].at }
         rn := e.row
         inner := []string{}
         while i < len(edits) && edits[i].row == rn { inner = append(inner, cell_xml(p, edits[i].ref, 0, edits[i].op, edits[i].val))  i = i + 1 }
         sp = append(sp, Splice{at: at, end_: at, text: "<" + p + "row r=\"" + str(rn) + "\">" + join(inner, "") + "</" + p + "row>"})
     }
-    // apply in file order (stable: equal offsets keep edit order)
-    done := make(map[int]int)
-    out := bytes("")
+    // merge the two lists, each already in file order
+    pieces := []string{}
     last := 0
-    k := 0
-    while k < len(sp) {
-        best := -1
-        j := 0
-        while j < len(sp) {
-            if !has(done, j) && (best < 0 || sp[j].at < sp[best].at) { best = j }
-            j = j + 1
-        }
-        done[best] = 1
-        out = bytes_concat(out, bytes_sub(b, last, sp[best].at))
-        out = bytes_concat(out, bytes(sp[best].text))
-        last = sp[best].end_
-        k = k + 1
+    a := 0
+    d := 0
+    while a < len(sp) || d < len(deps) {
+        use_dep := a >= len(sp) || (d < len(deps) && deps[d].at < sp[a].at)
+        x := Splice{at: 0, end_: 0, text: ""}
+        if use_dep { x = deps[d]  d = d + 1 } else { x = sp[a]  a = a + 1 }
+        pieces = append(pieces, str_of(b, last, x.at))
+        pieces = append(pieces, x.text)
+        last = x.end_
     }
-    return bytes_concat(out, bytes_sub(b, last, len(b)))
+    pieces = append(pieces, str_of(b, last, len(b)))
+    return bytes(join(pieces, ""))
 }
 
 // A stored result may be stale after any edit, and LibreOffice shows stored
-// results as they are. Remove them all: a formula cell without one must be
-// computed by whoever opens the file.
-func drop_results(b) {
-    s := scan_sheet(b)
-    parts := []string{}
-    last := 0
-    i := 0
-    while i < len(s.cells) {
-        c := s.cells[i]
-        if (c.f != "" || c.ftype != "") && c.has_v {
-            cell := str_of(b, c.at, c.end_)
-            a := index(cell, "<" + s.prefix + "v")
-            tail := substr(cell, a, len(cell))
-            z := index(tail, "</" + s.prefix + "v>")
-            if a >= 0 && z >= 0 {
-                cell = substr(cell, 0, a) + substr(tail, z + len(s.prefix) + 4, len(tail))
-                cell = replace(replace(replace(cell, " t=\"str\"", ""), " t=\"e\"", ""), " t=\"b\"", "")
-                cell = replace(cell, " t=\"n\"", "")
-            }
-            parts = append(parts, str_of(b, last, c.at))
-            parts = append(parts, cell)
-            last = c.end_
-        }
-        i = i + 1
+// results as they are. A formula cell without one must be computed by whoever
+// opens the file.
+func without_result(b, c, prefix) {
+    cell := str_of(b, c.at, c.end_)
+    a := index(cell, "<" + prefix + "v")
+    if a < 0 { return cell }
+    tail := substr(cell, a, len(cell))
+    z := index(tail, "</" + prefix + "v>")
+    if z < 0 { return cell }
+    cell = substr(cell, 0, a) + substr(tail, z + len(prefix) + 4, len(tail))
+    cell = replace(replace(replace(cell, " t=\"str\"", ""), " t=\"e\"", ""), " t=\"b\"", "")
+    return replace(cell, " t=\"n\"", "")
+}
+
+// allocates nothing: is there a formula anywhere in this sheet?
+func any_formula(b) {
+    pos := 0
+    while true {
+        t := next_tag(b, pos)
+        if t.at < 0 { return false }
+        if t.name == N_F && !t.closing { return true }
+        pos = t.end_
     }
-    parts = append(parts, str_of(b, last, len(b)))
-    return bytes(join(parts, ""))
+    return false
 }
 
 // ask the program that opens the file to recalculate every formula
@@ -643,18 +905,9 @@ func force_recalc(wb) {
     return bytes(replace(s, "</workbook>", "<calcPr fullCalcOnLoad=\"1\"/></workbook>"))
 }
 
-func main() {
-    es := unzip(read_file_bytes(env("IN")))
-    if env("MODE") == "read" {
-        t := now_ms()
-        out := read_all(es)
-        write_file(env("OUT"), join(out, "\n") + "\n")
-        println("cells=" + str(len(out)) + " read_ms=" + str(now_ms() - t))
-        return
-    }
-    names, paths := sheet_list(es)
+func read_edits(path) {
     edits := []Edit{}
-    lines := split(read_file(env("EDITS")), "\n")
+    lines := split(read_file(path), "\n")
     i := 0
     while i < len(lines) {
         q := split(lines[i], "\t")
@@ -664,19 +917,72 @@ func main() {
         }
         i = i + 1
     }
-    t := now_ms()
-    k := entry_index(es, paths[0])
-    es[k] = Entry{name: paths[0], data: edit_sheet(es[k].data, edits)}
-    if env("DROP") == "1" {
-        j := 0
-        while j < len(paths) {
-            dj := entry_index(es, paths[j])
-            es[dj] = Entry{name: paths[j], data: drop_results(es[dj].data)}
-            j = j + 1
+    return edits
+}
+
+// write a changed copy of the workbook; `es` itself is left as it was
+func save(es, edits, drop, out_path) {
+    names, paths := sheet_list(es)
+    out := []Entry{}
+    i := 0
+    while i < len(es) {
+        e := es[i]
+        if e.name == paths[0] { e = Entry{name: e.name, data: edit_sheet(e.data, edits, drop)} } else if e.name == "xl/workbook.xml" { e = Entry{name: e.name, data: force_recalc(e.data)} } else if drop {
+            j := 1
+            while j < len(paths) {
+                if e.name == paths[j] && any_formula(e.data) { e = Entry{name: e.name, data: edit_sheet(es[i].data, []Edit{}, true)} }
+                j = j + 1
+            }
         }
+        out = append(out, e)
+        i = i + 1
     }
-    w := entry_index(es, "xl/workbook.xml")
-    es[w] = Entry{name: "xl/workbook.xml", data: force_recalc(es[w].data)}
-    write_file_bytes(env("OUT"), zipup(es))
+    return write_file_bytes(out_path, zipup(out))
+}
+
+func rss_mb() {
+    st := read_file("/proc/self/status")
+    k := index(st, "VmRSS:")
+    return parse_int(trim(substr(st, k + 6, index(substr(st, k, len(st)), "kB") + k))) / 1024
+}
+
+// what a running app does: open once, keep the values, save again and again
+func session(es, edits, out_path) {
+    sst := []string{}
+    si := entry_index(es, "xl/sharedStrings.xml")
+    if si >= 0 { sst = shared_strings(es[si].data) }
+    names, paths := sheet_list(es)
+    vals := load_sheet(es[entry_index(es, paths[0])].data, sst, date_styles(es[entry_index(es, "xl/styles.xml")].data))
+    println("  opened " + str(len(vals)) + " cells: resident " + str(rss_mb()) + " MB")
+    i := 1
+    while i <= 20 {
+        if env("NOARENA") == "1" {
+            ok := save(es, edits, true, out_path)
+        } else {
+            arena { ok2 := save(es, edits, true, out_path) }
+        }
+        if i <= 3 || i % 5 == 0 { println("  after save " + str(i) + ": resident " + str(rss_mb()) + " MB") }
+        i = i + 1
+    }
+    // the values opened earlier must still be intact
+    println("  last value still readable: " + vals[len(vals) - 1].text + " | first: " + vals[0].text)
+}
+
+func main() {
+    init_names()
+    es := unzip(read_file_bytes(env("IN")))
+    if env("MODE") == "read" {
+        t := now_ms()
+        n := read_all(es, env("OUT"))
+        println("cells=" + str(n) + " read_ms=" + str(now_ms() - t))
+        return
+    }
+    edits := read_edits(env("EDITS"))
+    if env("MODE") == "session" {
+        session(es, edits, env("OUT"))
+        return
+    }
+    t := now_ms()
+    save(es, edits, env("DROP") == "1", env("OUT"))
     println("edits=" + str(len(edits)) + " write_ms=" + str(now_ms() - t))
 }
