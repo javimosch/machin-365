@@ -32,7 +32,8 @@ people and send files back.
   `AVERAGE`, `MIN`, `MAX`, `COUNT`, `ROUND`, `IF`. References adjust when
   cells are copied.
 - Open and save `.xlsx` (**assumed** to matter most) and CSV.
-- Undo and redo, sort, find, copy and paste.
+- Undo and redo, sort, find, cut, copy and paste.
+- A right-click menu on cells.
 - Safe save, recovery of unsaved work, and a warning before closing.
 
 ## Not in the first version
@@ -67,5 +68,6 @@ laptop.
 | Recalculate 20,000 formulas | under 100 ms | timed in a headless test |
 | CPU time per frame while scrolling | under 8 ms | the toolkit's `--bench` |
 | Key press or click to updated screen | median under 50 ms | simulated input, watching pixels |
-| Memory | under 300 MB | resident size after open and 5 minutes of use. **To decide:** a separate limit for the peak while saving (the trial reaches about 400 MB) |
+| Memory in normal use | under 300 MB | resident size after open and 5 minutes of use (**confirmed by the owner, 2026-11-28**) |
+| Memory while saving | under 500 MB | highest resident size, as the system records it (**confirmed by the owner, 2026-11-28**) |
 | Forced close | the saved file is never damaged; at most 30 s of typing lost | kill the app repeatedly |

@@ -1,0 +1,189 @@
+// Cell formats in styles.xml. A format a cell does not have yet is made by
+// cloning its current style (and its font, for bold) and appending it, so
+// every existing style keeps its number and its other settings.
+
+type StyleBook struct {
+    xml string
+    prefix string
+    fonts []string          // each <font> element
+    xfs []string            // each <xf> of cellXfs
+    codes []string          // number format code of each xf ("" = builtin)
+    ids []int               // numFmtId of each xf
+    font_of []int
+    new_fonts []string
+    new_xfs []string
+    euro_id int
+    add_euro bool
+}
+
+var EURO_CODE = "#,##0.00&quot; €&quot;"
+
+// the value of name="..." in the element's opening tag, "" if absent
+func tag_attr(el, name) {
+    head := substr(el, 0, index(el, ">") + 1)
+    k := index(head, " " + name + "=\"")
+    if k < 0 { return "" }
+    rest := substr(head, k + len(name) + 3, len(head))
+    return substr(rest, 0, index(rest, "\""))
+}
+
+// set name="val" in the opening tag of el
+func set_attr(el, name, val) {
+    gt := index(el, ">")
+    head := substr(el, 0, gt + 1)
+    tail := substr(el, gt + 1, len(el))
+    k := index(head, " " + name + "=\"")
+    if k >= 0 {
+        rest := substr(head, k + len(name) + 3, len(head))
+        head = substr(head, 0, k + len(name) + 3) + val + substr(rest, index(rest, "\""), len(rest))
+    } else {
+        cut := len(head) - 1
+        if cut > 0 && substr(head, cut - 1, cut) == "/" { cut = cut - 1 }
+        head = substr(head, 0, cut) + " " + name + "=\"" + val + "\"" + substr(head, cut, len(head))
+    }
+    return head + tail
+}
+
+// the elements called `child` directly inside the section `parent`
+func elements(b, parent, child) (out) {
+    out = []string{}
+    n_parent := name_code(parent)
+    n_child := name_code(child)
+    inside := false
+    pos := 0
+    start := -1
+    while true {
+        t := next_tag(b, pos)
+        if t.at < 0 { return }
+        pos = t.end_
+        if t.name == n_parent { inside = !t.closing && !t.empty  continue }
+        if inside && t.name == n_child {
+            if t.empty { out = append(out, str_of(b, t.at, t.end_)) } else if !t.closing { start = t.at } else { out = append(out, str_of(b, start, t.end_)) }
+        }
+    }
+}
+
+func read_styles(b) (sb) {
+    xml := bytes_str(b)
+    fonts := elements(b, "fonts", "font")
+    xfs := elements(b, "cellXfs", "xf")
+    nfs := elements(b, "numFmts", "numFmt")
+    code_of := make(map[string]string)
+    top := 163
+    euro := -1
+    i := 0
+    while i < len(nfs) {
+        id := tag_attr(nfs[i], "numFmtId")
+        code_of[id] = tag_attr(nfs[i], "formatCode")
+        if code_of[id] == EURO_CODE { euro = parse_int(id) }
+        if parse_int(id) > top { top = parse_int(id) }
+        i = i + 1
+    }
+    codes := []string{}
+    ids := []int{}
+    font_of := []int{}
+    i = 0
+    while i < len(xfs) {
+        id := tag_attr(xfs[i], "numFmtId")
+        c := ""
+        if has(code_of, id) { c = entities(code_of[id]) }
+        codes = append(codes, c)
+        ids = append(ids, parse_int(id))
+        font_of = append(font_of, parse_int(tag_attr(xfs[i], "fontId")))
+        i = i + 1
+    }
+    k := index(xml, "cellXfs")
+    j := k - 1
+    while j > 0 && substr(xml, j, j + 1) != "<" { j = j - 1 }
+    prefix := substr(xml, j + 1, k)
+    add := euro < 0
+    if add { euro = top + 1 }
+    return StyleBook{xml: xml, prefix: prefix, fonts: fonts, xfs: xfs, codes: codes, ids: ids, font_of: font_of,
+        new_fonts: []string{}, new_xfs: []string{}, euro_id: euro, add_euro: add}
+}
+
+func font_is_bold(f) {
+    return index(f, "<b/>") >= 0 || index(f, "<b val=\"true\"") >= 0 || index(f, "<b val=\"1\"") >= 0 || index(f, ":b/>") >= 0 || index(f, "<b />") >= 0
+}
+
+// "bold:fmt" of an existing style: fmt is date, eur, num or plain
+func style_look(sb, i) {
+    if i < 0 || i >= len(sb.xfs) { return "0:plain" }
+    bold := "0"
+    f := sb.font_of[i]
+    if f >= 0 && f < len(sb.fonts) && font_is_bold(sb.fonts[f]) { bold = "1" }
+    fmt := "plain"
+    if is_date_format(sb.ids[i], sb.codes[i]) { fmt = "date" } else if index(sb.codes[i], "€") >= 0 { fmt = "eur" } else if sb.ids[i] == 2 || sb.ids[i] == 4 || index(sb.codes[i], "0.00") >= 0 { fmt = "num" }
+    return bold + ":" + fmt
+}
+
+func with_bold(font, bold, p) {
+    f := font
+    olds := []string{"<" + p + "b/>", "<" + p + "b />", "<" + p + "b val=\"true\"/>", "<" + p + "b val=\"false\"/>", "<" + p + "b val=\"1\"/>", "<" + p + "b val=\"0\"/>"}
+    i := 0
+    while i < len(olds) { f = replace(f, olds[i], "")  i = i + 1 }
+    if !bold { return f }
+    gt := index(f, ">")
+    if substr(f, gt - 1, gt) == "/" { return substr(f, 0, gt - 1) + "><" + p + "b val=\"true\"/></" + p + "font>" }
+    return substr(f, 0, gt + 1) + "<" + p + "b val=\"true\"/>" + substr(f, gt + 1, len(f))
+}
+
+// the style for "base style `base`, with bold and/or format changed" ("x"
+// keeps what the base has). Appends it and returns its index.
+func derive_style(sb, base, bold, fmt) (idx, out) {
+    out = sb
+    b0 := base
+    if b0 < 0 || b0 >= len(sb.xfs) { b0 = 0 }
+    xf := sb.xfs[b0]
+    if fmt != "x" {
+        id := 0
+        if fmt == "num" { id = 4 } else if fmt == "eur" { id = sb.euro_id } else if fmt == "date" { id = 14 }
+        xf = set_attr(set_attr(xf, "numFmtId", str(id)), "applyNumberFormat", "1")
+    }
+    if bold != "x" {
+        font := with_bold(sb.fonts[sb.font_of[b0]], bold == "1", sb.prefix)
+        fid := len(sb.fonts) + len(out.new_fonts)
+        j := 0
+        while j < len(out.new_fonts) { if out.new_fonts[j] == font { fid = len(sb.fonts) + j }  j = j + 1 }
+        if fid == len(sb.fonts) + len(out.new_fonts) { out.new_fonts = append(out.new_fonts, font) }
+        xf = set_attr(set_attr(xf, "fontId", str(fid)), "applyFont", "1")
+    }
+    j := 0
+    while j < len(out.new_xfs) {
+        if out.new_xfs[j] == xf { idx = len(sb.xfs) + j  return }
+        j = j + 1
+    }
+    out.new_xfs = append(out.new_xfs, xf)
+    idx = len(sb.xfs) + len(out.new_xfs) - 1
+}
+
+// append `items` at the end of section `name` and correct its count
+func grow_section(xml, p, name, items, total) {
+    a := index(xml, "<" + p + name)
+    if a < 0 { return xml }
+    rest := substr(xml, a, len(xml))
+    gt := index(rest, ">")
+    head := set_attr(substr(rest, 0, gt + 1), "count", str(total))
+    z := index(rest, "</" + p + name + ">")
+    if z < 0 { return xml }
+    return substr(xml, 0, a) + head + substr(rest, gt + 1, z) + join(items, "") + substr(rest, z, len(rest))
+}
+
+func styles_xml(sb) {
+    p := sb.prefix
+    xml := grow_section(sb.xml, p, "fonts", sb.new_fonts, len(sb.fonts) + len(sb.new_fonts))
+    xml = grow_section(xml, p, "cellXfs", sb.new_xfs, len(sb.xfs) + len(sb.new_xfs))
+    used := false
+    i := 0
+    while i < len(sb.new_xfs) { if tag_attr(sb.new_xfs[i], "numFmtId") == str(sb.euro_id) { used = true }  i = i + 1 }
+    if used && sb.add_euro {
+        nf := "<" + p + "numFmt numFmtId=\"" + str(sb.euro_id) + "\" formatCode=\"" + EURO_CODE + "\"/>"
+        if index(xml, "</" + p + "numFmts>") >= 0 {
+            n := len(elements(bytes(xml), "numFmts", "numFmt"))
+            xml = grow_section(xml, p, "numFmts", []string{nf}, n + 1)
+        } else {
+            xml = replace(xml, "<" + p + "fonts", "<" + p + "numFmts count=\"1\">" + nf + "</" + p + "numFmts><" + p + "fonts")
+        }
+    }
+    return bytes(xml)
+}

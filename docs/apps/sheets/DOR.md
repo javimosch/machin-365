@@ -54,6 +54,32 @@ The app's record of cursor, undo steps and changes was compared with the test
 script's during the run, with no mismatch. Three deliberate mismatches were all
 caught.
 
+### First feedback and the second build (2026-11-28)
+
+The owner tried the window: **Ctrl+X did nothing, there was no right-click menu,
+and the toolbar was very limited.** Added: cut; a right-click menu (needed
+[machin-desktop#5](https://github.com/javimosch/machin-desktop/pull/5), the toolkit only
+reported the left button); toolbar buttons for cut, copy, paste, clear, bold,
+number, euro, date, sum and find; count, sum and average of the selection.
+Still missing from the approved mockup: **New and Open** (no file picker yet)
+and **Sort** (sorting 20,000 rows would store every cell as a change; it needs
+a different design, not tried).
+
+- 23 scripted checks of the new controls pass. In the saved file, LibreOffice
+  read 19 changed cells and formats as expected (a total's formula was checked
+  by hand), and 10,383 untouched cells in the first 400 rows were unchanged.
+  **Writing formats into `.xlsx` works for LibreOffice; Excel is not tried.**
+- Sum writes the formula; with no formula engine the cell shows its text.
+- Five-minute sessions of the second build: 193 MB (no formulas) and 177 MB
+  (formulas) at the end, highest 389 and 405 MB. Within both limits. Bold on
+  19,520 cells then three saves: 409 MB highest.
+- **Lost key presses:** the toolkit notes only whether a key went down in a
+  frame, so two presses of one key during a stalled frame count once. Seen
+  when the test wrote its status file to disk every frame (stalls up to 1.04 s);
+  with that file in memory the runs passed. A save stalls the window 0.6–0.8 s,
+  so the same can happen to a person typing arrows during a save (**from the
+  code and the test stalls, not reproduced with a save alone**).
+
 How the trial holds a file:
 
 - The file's sheet XML and numbers-only cell records, **reused by every save**.
@@ -67,8 +93,9 @@ How the trial holds a file:
 - Text is made only for the cells on screen.
 
 Found in the toolkit: its state store has **4,096 slots, and when full it
-silently writes into the first one** (from reading `host/host.c`; not
-reproduced). The trial keeps edits and undo out of it.
+silently writes into the first one** (reproduced: after 6,000 writes, 1,905
+keys read back a wrong value;
+[machin-desktop#4](https://github.com/javimosch/machin-desktop/issues/4)). The trial keeps edits and undo out of it.
 
 Not covered: formula calculation (after an edit, formula cells show the formula
 text), longer sessions, much larger undo histories, a real screen and graphics

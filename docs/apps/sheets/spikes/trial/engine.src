@@ -671,7 +671,7 @@ func esc_out(s) {
 }
 
 // ---- writing ----
-type Edit struct { ref string  op string  val string  col int  row int }
+type Edit struct { ref string  op string  val string  col int  row int  style int }     // style -1: keep
 
 func xml_escape(s) {
     s = replace(replace(replace(s, "&", "&amp;"), "<", "&lt;"), ">", "&gt;")
@@ -765,7 +765,7 @@ func edit_scanned(b, s, unsorted, drop) {
         if k < s.count && cell_at(s, k).row == edits[i].row && cell_at(s, k).col == edits[i].col {
             edited[k] = i
             c := cell_at(s, k)
-            if c.shared >= 0 && has(m, c.shared) && m[c.shared] == k { lost[c.shared] = 1 }
+            if edits[i].op != "style" && c.shared >= 0 && has(m, c.shared) && m[c.shared] == k { lost[c.shared] = 1 }
         }
         i = i + 1
     }
@@ -791,7 +791,18 @@ func edit_scanned(b, s, unsorted, drop) {
         k := lower_bound(s, e.row, e.col)
         if k < s.count && cell_at(s, k).row == e.row && cell_at(s, k).col == e.col {
             c := cell_at(s, k)
-            sp = append(sp, Splice{at: c.at, end_: c.end_, text: cell_xml(p, e.ref, c.style, e.op, e.val)})
+            st := c.style
+            if e.style >= 0 { st = e.style }
+            text := ""
+            if e.op != "style" { text = cell_xml(p, e.ref, st, e.op, e.val) } else if c.shared >= 0 && c.f_end == c.f_at && has(lost, c.shared) {
+                // its shared formula is going away: write its own copy
+                text = cell_xml(p, e.ref, st, "formula", formula_of(b, s, m, k))
+            } else {
+                text = str_of(b, c.at, c.end_)
+                if drop && has_formula(c) && c.v_at >= 0 { text = without_result(b, c, p) }
+                text = set_attr(text, "s", str(st))
+            }
+            sp = append(sp, Splice{at: c.at, end_: c.end_, text: text})
             i = i + 1
             continue
         }
@@ -801,13 +812,13 @@ func edit_scanned(b, s, unsorted, drop) {
             if rw.empty {
                 tg := str_of(b, rw.at, rw.end_ - 2)
                 inner := []string{}
-                while i < len(edits) && edits[i].row == rw.num { inner = append(inner, cell_xml(p, edits[i].ref, 0, edits[i].op, edits[i].val))  i = i + 1 }
+                while i < len(edits) && edits[i].row == rw.num { inner = append(inner, cell_xml(p, edits[i].ref, maxi(edits[i].style, 0), edits[i].op, edits[i].val))  i = i + 1 }
                 sp = append(sp, Splice{at: rw.at, end_: rw.end_, text: tg + ">" + join(inner, "") + "</" + p + "row>"})
                 continue
             }
             at := rw.close_at
             if k < s.count && cell_at(s, k).row == e.row { at = cell_at(s, k).at }
-            sp = append(sp, Splice{at: at, end_: at, text: cell_xml(p, e.ref, 0, e.op, e.val)})
+            sp = append(sp, Splice{at: at, end_: at, text: cell_xml(p, e.ref, maxi(e.style, 0), e.op, e.val)})
             i = i + 1
             continue
         }
@@ -816,7 +827,7 @@ func edit_scanned(b, s, unsorted, drop) {
         if r < len(s.rows) { at = s.rows[r].at }
         rn := e.row
         inner := []string{}
-        while i < len(edits) && edits[i].row == rn { inner = append(inner, cell_xml(p, edits[i].ref, 0, edits[i].op, edits[i].val))  i = i + 1 }
+        while i < len(edits) && edits[i].row == rn { inner = append(inner, cell_xml(p, edits[i].ref, maxi(edits[i].style, 0), edits[i].op, edits[i].val))  i = i + 1 }
         sp = append(sp, Splice{at: at, end_: at, text: "<" + p + "row r=\"" + str(rn) + "\">" + join(inner, "") + "</" + p + "row>"})
     }
     // merge the two lists, each already in file order
