@@ -44,6 +44,17 @@ shared editing, `.ods`.
 A file containing something Sheets cannot keep says so **before** it can be
 overwritten.
 
+## Rules for saving a changed .xlsx (from testing)
+
+- Change only the edited cells; leave the rest of the file as it was.
+- **Never leave a stored formula result that may be out of date.** LibreOffice
+  shows stored results as they are. Until Sheets computes every formula in a
+  file itself, remove all stored results when saving a change. The cost: a
+  viewer that does not calculate (a file preview, for example) shows those
+  cells empty (**not tried**).
+- Sheets must calculate formulas itself to show them. What it shows for a
+  function it does not support is **still to be decided**.
+
 ## Speed targets
 
 Measured on the released build with the largest sheet above, on an 8-thread
