@@ -7,19 +7,19 @@
    "name": "Tasks",
    "kind": "desktop",
    "repo": "javimosch/machin-tasks",
-   "version": "0.2.0",
+   "version": "0.2.1",
    "bin": "machin-tasks",
    "desc": "Get-things-done task list - offline-first, syncs when a server is configured",
    "assets": [
     {
      "platform": "linux-amd64",
-     "url": "https://github.com/javimosch/machin-tasks/releases/download/v0.2.0/machin-tasks-linux-amd64",
-     "sha256": "8c3b0f5f121543d1b4b723618f2c76af8154885fdbe8965d18cd3744ffd3cdd8"
+     "url": "https://github.com/javimosch/machin-tasks/releases/download/v0.2.1/machin-tasks-linux-amd64",
+     "sha256": "3e262cdb3ec6a013fd67730a0b24ea260f6525dcf940d00965f591ebc72e062a"
     },
     {
      "platform": "linux-arm64",
-     "url": "https://github.com/javimosch/machin-tasks/releases/download/v0.2.0/machin-tasks-linux-arm64",
-     "sha256": "38574e0d7f4af08f79de9d7014659ac417156ade352e247b6543eea99f7c7d62"
+     "url": "https://github.com/javimosch/machin-tasks/releases/download/v0.2.1/machin-tasks-linux-arm64",
+     "sha256": "c6615fe2bbbd8c1732a6fbd5285b0810c082988ddf200b51c78f1e1a9ab1f5c1"
     }
    ]
   },
@@ -28,19 +28,19 @@
    "name": "Chat",
    "kind": "desktop",
    "repo": "javimosch/machin-chat",
-   "version": "0.2.0",
+   "version": "0.2.1",
    "bin": "machin-chat",
    "desc": "Live room chat over machin-rooms (ws://) - dogfoods the plain-websocket client path",
    "assets": [
     {
      "platform": "linux-amd64",
-     "url": "https://github.com/javimosch/machin-chat/releases/download/v0.2.0/machin-chat-linux-amd64",
-     "sha256": "a99085ca967a344ab5df0960b661b2a0ba55e0022159d522cd2538deaab2a068"
+     "url": "https://github.com/javimosch/machin-chat/releases/download/v0.2.1/machin-chat-linux-amd64",
+     "sha256": "689d46398b119afad7f4c43d120a9594903afc1c5386a4f09b8c03e8d7181f2e"
     },
     {
      "platform": "linux-arm64",
-     "url": "https://github.com/javimosch/machin-chat/releases/download/v0.2.0/machin-chat-linux-arm64",
-     "sha256": "2a3f8c3a30ddd22f5859631484bd69636cddf36b34e519e5790e3f0d90f80728"
+     "url": "https://github.com/javimosch/machin-chat/releases/download/v0.2.1/machin-chat-linux-arm64",
+     "sha256": "789c35d0bc44c84d72475036e5191b301887968378bf8340160880ee49918f17"
     }
    ]
   }
