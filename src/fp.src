@@ -1,0 +1,129 @@
+// fp.src — content fingerprints for the equal-_mtime tie-break (issue #37).
+//
+// _mtime is a writer-managed hint, not content: the LWW merge compares
+// only it, so any write path that does not deliberately refresh it — a
+// raw PATCH/POST against the bkn API, a script, a future app — leaves
+// lm == rm while the two sides hold different docs. Counting that `same`
+// diverges the replicas silently and permanently.
+//
+// rec_fingerprint hashes the doc with the sync-owned fields removed, so
+// the comparison covers content only:
+//
+//   - "$._mtime" always — the stamp itself is what tied.
+//   - the remote tenancy stamp — an org/owner-scoped bkn rewrites its
+//     scopeField (provision.src declares org_field "org") into every doc
+//     on POST, so remote copies carry e.g. "org":"<claim>" the local
+//     store never writes. Comparing raw docs would report a difference
+//     on every synced record on every pass, forever. A field is stripped
+//     only when its value IS the caller's claim — the signature of the
+//     stamp — so genuine content that merely looks tenancy-ish survives.
+//     A collection's scope policy has no HTTP route, so the claim is the
+//     only verifiable signal; the suite-provisioned field is always
+//     "org", and the owner-name list covers common owner_field spellings.
+//
+// Removal goes through SQLite's json_remove — the same engine bkn's
+// stripID uses — so the path is top-level-only and commas/nesting stay
+// correct where regex surgery would not.
+//
+// The winner is the HIGHER fingerprint, not "local wins": every syncing
+// client computes the same two hashes and picks the same side, so tied
+// edits converge instead of ping-ponging between clients that each think
+// their own copy is freshest.
+
+var fp_db = 0
+var fp_claims_init = false
+var fp_org_claim = ""
+var fp_sub_claim = ""
+
+// remote-token claims, decoded once per process — fingerprinting runs
+// per tied record and jwt_claim base64-decodes on every call.
+func fp_claims() {
+    if fp_claims_init { return }
+    fp_claims_init = true
+    fp_org_claim = jwt_org(sync_remote_tok)
+    fp_sub_claim = jwt_claim(sync_remote_tok, ".sub")
+}
+
+// sqlite_query wraps a TEXT column's JSON inside a JSON string, so its
+// quotes and backslashes arrive escaped — unwrap before hashing.
+func fp_unquote(v) (s) {
+    s = v
+    if len(s) >= 2 {
+        if substr(s, 0, 1) == "\"" { s = substr(s, 1, len(s) - 1) }
+    }
+}
+
+func fp_unescape(s) (out) {
+    out = replace(replace(s, "\\\"", "\""), "\\\\", "\\")
+}
+
+// Top-level members whose VALUE is the caller's claim are the remote's
+// tenancy stamp, not content — collect their json_remove paths. The org
+// claim scopes on org_field ("org" by suite convention); the user id
+// scopes on owner_field, whose name the remote never exposes, so the
+// usual spellings are checked against the sub claim instead.
+func fp_stamp_paths(rec) (paths) {
+    paths = []string{}
+    if fp_org_claim != "" && jstr(rec, ".org") == fp_org_claim {
+        paths = append(paths, "$.org")
+    }
+    if fp_sub_claim == "" { return paths }
+    names := []string{"owner", "owner_id", "user_id", "uid", "sub",
+        "created_by", "author_id", "assignee_id", "holder", "account_id",
+        "member_id"}
+    i := 0
+    while i < len(names) {
+        if jstr(rec, "." + names[i]) == fp_sub_claim {
+            paths = append(paths, "$." + names[i])
+        }
+        i = i + 1
+    }
+    return paths
+}
+
+// json_remove every path in one query; any sqlite failure degrades to
+// hashing the raw doc rather than failing the pass.
+func fp_strip(rec, paths) {
+    if fp_db == 0 { fp_db = sqlite_open(":memory:") }
+    if fp_db == 0 { return rec }
+    sql := "SELECT json_remove(?,"
+    binds := []string{rec}
+    i := 0
+    while i < len(paths) {
+        sql = sql + "?,"
+        binds = append(binds, paths[i])
+        i = i + 1
+    }
+    sql = substr(sql, 0, len(sql) - 1) + ") AS d"
+    rows := sqlite_query(fp_db, sql, binds)
+    if rows == "" || rows == "[]" { return rec }
+    v, e := json_get(rows, "[0].d")
+    if e != "" { return rec }
+    return fp_unescape(fp_unquote(v))
+}
+
+// sha256 of the doc minus its sync-owned fields (_mtime + tenancy stamp).
+func rec_fingerprint(rec) (h) {
+    fp_claims()
+    paths := fp_stamp_paths(rec)
+    // _mtime is a number — jstr would read it as "" — so presence comes
+    // from json_get's error channel, not the parsed value.
+    _, me := json_get(rec, "._mtime")
+    if me == "" { paths = append(paths, "$._mtime") }
+    n := rec
+    if len(paths) > 0 { n = fp_strip(rec, paths) }
+    return sha256(n)
+}
+
+// Tie-break for lm == rm: 0 = same content, 1 = local wins (push),
+// 2 = remote wins (pull). Byte-identical docs — the converged common
+// case — short-circuit before paying for two fingerprints.
+func tie_winner(lrec, rrec) (w) {
+    w = 0
+    if lrec == rrec { return w }
+    lf := rec_fingerprint(lrec)
+    rf := rec_fingerprint(rrec)
+    if lf == rf { return w }
+    if lf > rf { return 1 }
+    return 2
+}

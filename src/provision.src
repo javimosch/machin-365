@@ -106,20 +106,25 @@ func sync_deny_ref(ref) {
         " removing locally)")
 }
 
-// org claim of the remote access token; "" for org-less or non-JWT tokens.
-// Same unsigned payload read as jwt_exp — a presence check only, the server
-// stays the verifier. bkn gates self-service PUTs on this claim, so an
-// empty result means the PUT could only be refused: skip it quietly.
-func jwt_org(token) {
+// One claim of the remote access token's payload — the segment is plain
+// base64url JSON, decoded for local decisions only; the signature is NOT
+// verified here (the server stays the verifier). "" when the token is not
+// a readable JWT or lacks the claim.
+func jwt_claim(token, path) {
     p1 := index(token, ".")
     if p1 <= 0 { return "" }
     rest := substr(token, p1 + 1, len(token))
     p2 := index(rest, ".")
     if p2 <= 0 { return "" }
-    v, e := json_get(base64_decode(substr(rest, 0, p2)), ".org")
+    v, e := json_get(base64_decode(substr(rest, 0, p2)), path)
     if e != "" { return "" }
     return parse(v, "")
 }
+
+// org claim of the remote access token; "" for org-less or non-JWT tokens.
+// bkn gates self-service PUTs on this claim, so an empty result means the
+// PUT could only be refused: skip it quietly.
+func jwt_org(token) { return jwt_claim(token, ".org") }
 
 func api_put(base, tok, path, body) {
     st, resp, err := http_request("PUT", base + path,

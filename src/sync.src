@@ -3,8 +3,9 @@
 // read .id and ._mtime and re-POST the raw object (POST upserts by id).
 //
 // Conflict policy: last-writer-wins on the _mtime field — milliseconds
-// since epoch, the unit sync itself writes (now_ms()). Sync stamps
-// _mtime on any doc it writes that lacks one.
+// since epoch, the unit sync itself writes (now_ms()) — with a
+// content-fingerprint tie-break when mtimes are equal (fp.src). Sync
+// stamps _mtime on any doc it writes that lacks one.
 //
 // Deletes DO propagate via tombstones (see tombs.src for the marker
 // format and migration): a deleter POSTs a marker to sync/tombstones,
@@ -283,7 +284,28 @@ func sync_one_ref(ref, tm, man, rman) {
                         if !sync_ref_denied(ref) &&
                             sync_write_rec(ref, rrec, false) { pulled = pulled + 1 }
                     } else {
-                        same = same + 1
+                        // lm == rm: _mtime is only a writer-managed hint —
+                        // writers that never refresh it (raw PATCH/POST)
+                        // would diverge silently as `same` forever. Compare
+                        // content; the higher fingerprint wins so every
+                        // syncing client resolves the tie identically.
+                        w := tie_winner(lrec, rrec)
+                        if w == 0 {
+                            same = same + 1
+                        } else if w == 1 {
+                            if sync_write_rec(ref, lrec, true) {
+                                pushed = pushed + 1
+                                // the remote now holds the winning local
+                                // doc — refresh the mtime pre-delete recorded
+                                if id != "" { rpost_mt[id] = push_mtime(lrec, ref) }
+                            }
+                        } else {
+                            // remote→local pull — skipped once the ref's
+                            // remote side denied writes this pass
+                            // (sync_deny_ref, #107)
+                            if !sync_ref_denied(ref) &&
+                                sync_write_rec(ref, rrec, false) { pulled = pulled + 1 }
+                        }
                     }
                 }
             }
