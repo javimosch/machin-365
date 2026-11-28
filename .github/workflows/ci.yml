@@ -38,3 +38,9 @@ jobs:
 
       - name: Regression tests
         run: ./test/run.sh
+
+      # last: it rebuilds build/machin-365 the way a release does
+      - name: Release build runs on other distributions
+        run: |
+          ci/build-static.sh /usr/local/bin/machin
+          ci/check-portable.sh build/machin-365

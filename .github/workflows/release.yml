@@ -29,24 +29,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install static link deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev zlib1g-dev libzstd-dev
-
-      - name: Install machin v0.142.0
+      - name: Fetch machin v0.142.0
         run: |
           curl -fsSL -o /tmp/machin \
             "https://github.com/javimosch/machin/releases/download/v0.142.0/machin-v0.142.0-linux-${{ matrix.arch }}"
           chmod +x /tmp/machin
-          sudo mv /tmp/machin /usr/local/bin/machin
 
-      - name: Build suite binary
+      - name: Build suite binary (musl static)
         run: |
           mkdir -p dist
-          ./build.sh
+          ci/build-static.sh /tmp/machin
           mv build/machin-365 "dist/machin-365-linux-${{ matrix.arch }}"
           file "dist/machin-365-linux-${{ matrix.arch }}"
+
+      - name: Check it runs on other distributions
+        run: ci/check-portable.sh "dist/machin-365-linux-${{ matrix.arch }}"
 
       - name: Smoke test on this arch
         run: MACHIN_365_HOME=/tmp/m365-rel ./dist/machin-365-linux-${{ matrix.arch }} catalog >/dev/null
