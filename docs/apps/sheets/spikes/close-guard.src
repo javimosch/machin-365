@@ -1,0 +1,15 @@
+func view() {
+    mdk_guard_close(1)
+    col()
+    fill()
+    center()
+    gap(16.0)
+        if mdk_close_asked() == 1 {
+            text("You have unsaved changes", 22.0)
+            if button("Close without saving") { mdk_close_answer(1)  animate() }
+            if button_ghost("Keep editing") { mdk_close_answer(0)  animate() }
+        } else {
+            text("editing...", 18.0)
+        }
+    end()
+}

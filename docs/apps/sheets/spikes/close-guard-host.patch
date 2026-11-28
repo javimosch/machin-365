@@ -1,0 +1,31 @@
+--- /home/jarancibia/ai/machin-desktop/host/host.c	2026-11-13 12:59:37.325273119 +0100
++++ /tmp/claude-1000/-home-jarancibia-ai-machin-365/8b8cdbd5-934f-42d0-bde0-627ea06b50e4/scratchpad/spike/mdkquit/host/host.c	2026-11-28 16:40:15.058223880 +0100
+@@ -334,6 +334,11 @@
+ int64_t mdk_key_pressed(int64_t sc) { return (sc >= 0 && sc < 512) ? g_keys[sc] : 0; }
+ double mdk_time(void) { return (double)SDL_GetTicksNS() / 1e9 - g_t0; }
+ void mdk_animate(void) { g_anim = 1; }
++// spike: an app may hold a close request and decide itself
++static int g_guard, g_quit_asked, g_quit_now;
++void mdk_guard_close(int64_t on) { g_guard = (int)on; }
++int64_t mdk_close_asked(void) { return g_quit_asked; }
++void mdk_close_answer(int64_t quit) { g_quit_asked = 0; if (quit) g_quit_now = 1; }
+ 
+ // Text typed this frame (UTF-8, IME-composed by SDL), modifier state,
+ // clipboard, the pointer's shape, and the window's title/size.
+@@ -824,7 +829,7 @@
+         int got = timeout ? SDL_WaitEventTimeout(&e, timeout) : SDL_PollEvent(&e);  /* -1 = wait forever */
+         while (got) {
+             switch (e.type) {
+-            case SDL_EVENT_QUIT: running = 0; break;
++            case SDL_EVENT_QUIT: if (g_guard) g_quit_asked = 1; else running = 0; break;
+             case SDL_EVENT_MOUSE_MOTION: g_mx = e.motion.x; g_my = e.motion.y; break;
+             case SDL_EVENT_MOUSE_BUTTON_DOWN: if (e.button.button == 1) { g_mdown = 1; g_mpressed = 1; g_mx = e.button.x; g_my = e.button.y; g_px = g_mx; g_py = g_my; } break;
+             case SDL_EVENT_MOUSE_BUTTON_UP: if (e.button.button == 1) { g_mdown = 0; g_mreleased = 1; } break;
+@@ -856,6 +861,7 @@
+             if (before != g_err[0]) dirty = 1;
+         }
+ #endif
++        if (g_quit_now) break;
+         if (!dirty && !anim) continue;
+         dirty = 0;
+         int lw, lh, fbw, fbh;

@@ -1,0 +1,136 @@
+// DoR spike: virtualized 26 x 100000 grid, mouse and keyboard range
+// selection, TSV clipboard. Throwaway code.
+var ROWS = 100000
+var COLS = 26
+var RH = 26.0
+var CW = 110.0
+
+func cell_value(r, c) {
+    if c == 0 { return "Item " + str(r + 1) }
+    return str((r * 31 + c * 7) % 10000)
+}
+
+func clampi(v, lo, hi) {
+    if v < lo { return lo }
+    if v > hi { return hi }
+    return v
+}
+
+func view() {
+    top := state_int("top", 0)
+    cr := state_int("cr", 0)
+    cc := state_int("cc", 0)
+    ar := state_int("ar", 0)
+    ac := state_int("ac", 0)
+    moved := false
+    if key(K_DOWN) { cr = cr + 1  moved = true }
+    if key(K_UP) { cr = cr - 1  moved = true }
+    if key(K_RIGHT) { cc = cc + 1  moved = true }
+    if key(K_LEFT) { cc = cc - 1  moved = true }
+    if key(K_PAGEDOWN) { cr = cr + 30  moved = true }
+    cr = clampi(cr, 0, ROWS - 1)
+    cc = clampi(cc, 0, COLS - 1)
+    if moved && !shift() { ar = cr  ac = cc }
+
+    top = top - int(mdk_wheel() * 3.0)
+    visible := int((mdk_win_h() - 2.0 * RH) / RH)
+    if moved && cr < top { top = cr }
+    if moved && cr >= top + visible { top = cr - visible + 1 }
+    top = clampi(top, 0, ROWS - visible)
+    ncols := clampi(int((mdk_win_w() - 70.0) / CW) + 1, 1, COLS)
+
+    if ctrl() && key(K_C) {
+        out := ""
+        r := mini(ar, cr)
+        while r <= maxi(ar, cr) {
+            c := mini(ac, cc)
+            while c <= maxi(ac, cc) {
+                out = out + cell_value(r, c)
+                if c < maxi(ac, cc) { out = out + "\t" }
+                c = c + 1
+            }
+            out = out + "\n"
+            r = r + 1
+        }
+        mdk_set_clipboard(out)
+        set_str("status", "copied " + str(len(split(out, "\n")) - 1) + " rows")
+    }
+    if ctrl() && key(K_V) {
+        p := mdk_clipboard()
+        lines := split(p, "\n")
+        set_str("status", "pasted text: " + str(len(lines) - 1) + " rows x " + str(len(split(lines[0], "\t"))) + " columns")
+    }
+
+    col()
+    fill()
+        row()
+        height(RH)
+        padxy(8.0, 4.0)
+            text(col_name(cc) + str(cr + 1) + "   " + state_str("status", ""), 14.0)
+        end()
+        row()
+        height(RH)
+            col()
+            width(70.0)
+            end()
+            c := 0
+            while c < ncols {
+                row()
+                width(CW)
+                center()
+                bg(C_SURFACE2)
+                border(0.5, C_BORDER)
+                    text(col_name(c), 13.0)
+                end()
+                c = c + 1
+            }
+        end()
+        r := top
+        while r < top + visible && r < ROWS {
+            row()
+            height(RH)
+                row()
+                width(70.0)
+                center()
+                bg(C_SURFACE2)
+                    text(str(r + 1), 12.0)
+                end()
+                c = 0
+                while c < ncols {
+                    i := row()
+                    width(CW)
+                    height(RH)
+                    padxy(8.0, 4.0)
+                    clip()
+                    sel := r >= mini(ar, cr) && r <= maxi(ar, cr) && c >= mini(ac, cc) && c <= maxi(ac, cc)
+                    if sel { bg(0x6E56CF55) }
+                    if r == cr && c == cc { border(2.0, C_ACCENT) } else { border(0.5, C_BORDER) }
+                        text(cell_value(r, c), 13.0)
+                    end()
+                    if mdk_mouse_down() != 0 && hovered(i) {
+                        cr = r
+                        cc = c
+                        if state_int("dragging", 0) == 0 {
+                            set_int("dragging", 1)
+                            ar = r
+                            ac = c
+                        }
+                        animate()
+                    }
+                    c = c + 1
+                }
+            end()
+            r = r + 1
+        }
+    end()
+    if mdk_mouse_down() == 0 { set_int("dragging", 0) }
+    set_int("top", top)
+    set_int("cr", cr)
+    set_int("cc", cc)
+    set_int("ar", ar)
+    set_int("ac", ac)
+}
+
+func col_name(c) { return substr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", c, c + 1) }
+func mini(a, b) { if a < b { return a }  return b }
+func maxi(a, b) { if a > b { return a }  return b }
