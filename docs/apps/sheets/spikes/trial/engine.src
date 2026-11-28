@@ -1,0 +1,873 @@
+// DoR spike: read the cells of an .xlsx, and write edits by splicing the
+// original sheet XML, so everything not edited stays byte for byte.
+// Throwaway: no zip64, no column-only ranges in shared formulas.
+
+// ---- zip ----
+type Entry struct { name string  data bytes }
+
+func le(b, o, n) {
+    v := 0
+    i := n - 1
+    while i >= 0 { v = v * 256 + byte_at(b, o + i)  i = i - 1 }
+    return v
+}
+
+func unzip(z) (es) {
+    es = []Entry{}
+    e := len(z) - 22
+    while e >= 0 && le(z, e, 4) != 101010256 { e = e - 1 }
+    if e < 0 { println("not a zip")  exit(2) }
+    p := le(z, e + 16, 4)
+    i := 0
+    while i < le(z, e + 10, 2) {
+        nl := le(z, p + 28, 2)
+        lo := le(z, p + 42, 4)
+        start := lo + 30 + le(z, lo + 26, 2) + le(z, lo + 28, 2)
+        out := bytes_sub(z, start, start + le(z, p + 20, 4))
+        if le(z, p + 10, 2) == 8 {
+            if le(z, p + 24, 4) > 134217728 { println("entry too large")  exit(3) }
+            out = deflate_decompress(out, le(z, p + 24, 4))
+        }
+        if len(out) != le(z, p + 24, 4) || crc32(out) != le(z, p + 16, 4) { println("damaged entry")  exit(4) }
+        es = append(es, Entry{name: bytes_str(bytes_sub(z, p + 46, p + 46 + nl)), data: out})
+        p = p + 46 + nl + le(z, p + 30, 2) + le(z, p + 32, 2)
+        i = i + 1
+    }
+}
+
+func hexd(v) { d := "0123456789abcdef"  return substr(d, v / 16, v / 16 + 1) + substr(d, v % 16, v % 16 + 1) }
+func num(v, n) {
+    s := ""
+    i := 0
+    while i < n { s = s + hexd(v % 256)  v = v / 256  i = i + 1 }
+    return from_hex(s)
+}
+
+func zipup(es) {
+    body := bytes("")
+    dir := bytes("")
+    i := 0
+    while i < len(es) {
+        nameb := bytes(es[i].name)
+        comp := deflate_compress(es[i].data, 6)
+        meta := bytes_concat(num(crc32(es[i].data), 4), bytes_concat(num(len(comp), 4), num(len(es[i].data), 4)))
+        head := bytes_concat(from_hex("504b0304140000080800" + "00002100"), meta)
+        head = bytes_concat(head, bytes_concat(num(len(nameb), 2), bytes_concat(num(0, 2), nameb)))
+        cd := bytes_concat(from_hex("504b0102140014000008080000002100"), meta)
+        cd = bytes_concat(cd, bytes_concat(num(len(nameb), 2), bytes_concat(from_hex("000000000000000000000000"), bytes_concat(num(len(body), 4), nameb))))
+        body = bytes_concat(body, bytes_concat(head, comp))
+        dir = bytes_concat(dir, cd)
+        i = i + 1
+    }
+    tail := bytes_concat(from_hex("504b050600000000"), bytes_concat(num(len(es), 2), bytes_concat(num(len(es), 2), bytes_concat(num(len(dir), 4), bytes_concat(num(len(body), 4), num(0, 2))))))
+    return bytes_concat(body, bytes_concat(dir, tail))
+}
+
+func entry_index(es, name) {
+    i := 0
+    while i < len(es) { if es[i].name == name { return i }  i = i + 1 }
+    return -1
+}
+
+// ---- XML scanning over bytes ----
+// Walking a sheet must allocate nothing: this runs a few million times and a
+// goroutine frees nothing until it returns. Names are compared as numbers and
+// attributes are found in place; a string is built only when somebody wants it.
+func str_of(b, a, z) { return bytes_str(bytes_sub(b, a, z)) }
+
+func starts_at(b, i, l) {
+    if i + len(l) > len(b) { return false }
+    j := 0
+    while j < len(l) { if byte_at(b, i + j) != byte_at(l, j) { return false }  j = j + 1 }
+    return true
+}
+
+func find_bytes(b, from, l) {
+    first := byte_at(l, 0)
+    i := from
+    n := len(b)
+    while i < n {
+        if byte_at(b, i) == first && starts_at(b, i, l) { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+func find_lit(b, from, lit) { return find_bytes(b, from, bytes(lit)) }
+
+var N_SI = 0
+var N_T = 0
+var N_RPH = 0
+var N_ROW = 0
+var N_C = 0
+var N_V = 0
+var N_F = 0
+var N_IS = 0
+var N_SHEETDATA = 0
+var LIT_COMMENT = bytes("")
+var LIT_CDATA = bytes("")
+var LIT_COMMENT_END = bytes("")
+var LIT_CDATA_END = bytes("")
+var LIT_GT = bytes("")
+var A_R = bytes("")
+var A_S = bytes("")
+var A_TT = bytes("")
+var A_SI = bytes("")
+
+func name_code(s) {
+    b := bytes(s)
+    h := 0
+    i := 0
+    while i < len(b) { h = h * 131 + byte_at(b, i)  i = i + 1 }
+    return h
+}
+
+func init_names() {
+    N_SI = name_code("si")  N_T = name_code("t")  N_RPH = name_code("rPh")  N_ROW = name_code("row")
+    N_C = name_code("c")  N_V = name_code("v")  N_F = name_code("f")  N_IS = name_code("is")
+    N_SHEETDATA = name_code("sheetData")
+    LIT_COMMENT = bytes("<!--")  LIT_CDATA = bytes("<![CDATA[")
+    LIT_COMMENT_END = bytes("-->")  LIT_CDATA_END = bytes("]]>")  LIT_GT = bytes(">")
+    A_R = bytes("r")  A_S = bytes("s")  A_TT = bytes("t")  A_SI = bytes("si")
+}
+
+type Tag struct {
+    at int          // offset of '<'
+    end_ int        // offset after '>'
+    name int        // code of the local name
+    name_at int     // where the local name starts
+    closing bool
+    empty bool      // <a/>
+}
+
+func is_space(c) { return c == 32 || c == 9 || c == 10 || c == 13 }
+
+// the next element tag at or after pos; at = -1 when there is none
+func next_tag(b, pos) (t) {
+    t = Tag{at: -1, end_: len(b), name: 0, name_at: 0, closing: false, empty: false}
+    n := len(b)
+    i := pos
+    while i < n {
+        if byte_at(b, i) != 60 { i = i + 1  continue }
+        c1 := byte_at(b, i + 1)
+        if c1 == 33 || c1 == 63 {
+            if starts_at(b, i, LIT_COMMENT) { i = find_bytes(b, i, LIT_COMMENT_END) + 3  continue }
+            if starts_at(b, i, LIT_CDATA) { i = find_bytes(b, i, LIT_CDATA_END) + 3  continue }
+            i = find_bytes(b, i, LIT_GT) + 1
+            continue
+        }
+        j := i + 1
+        closing := false
+        if byte_at(b, j) == 47 { closing = true  j = j + 1 }
+        h := 0
+        ns := j
+        while j < n {
+            c := byte_at(b, j)
+            if c == 47 || c == 62 || is_space(c) { break }
+            if c == 58 { h = 0  ns = j + 1 } else { h = h * 131 + c }
+            j = j + 1
+        }
+        // '>' may appear inside a quoted attribute value
+        q := 0
+        while j < n {
+            c := byte_at(b, j)
+            if q != 0 { if c == q { q = 0 } } else if c == 34 || c == 39 { q = c } else if c == 62 { break }
+            j = j + 1
+        }
+        t = Tag{at: i, end_: j + 1, name: h, name_at: ns, closing: closing, empty: byte_at(b, j - 1) == 47}
+        return
+    }
+}
+
+// where an attribute's value lies in the tag: [a, z), or a = -1
+func attr_span(b, t, name) (a, z) {
+    a = -1
+    z = -1
+    i := t.name_at
+    n := t.end_ - 1
+    while i < n && !is_space(byte_at(b, i)) { i = i + 1 }
+    while i < n {
+        while i < n && (is_space(byte_at(b, i)) || byte_at(b, i) == 47) { i = i + 1 }
+        ks := i
+        while i < n && byte_at(b, i) != 61 && !is_space(byte_at(b, i)) { i = i + 1 }
+        ke := i
+        while i < n && byte_at(b, i) != 34 && byte_at(b, i) != 39 { i = i + 1 }
+        if i >= n { return }
+        q := byte_at(b, i)
+        i = i + 1
+        vs := i
+        while i < n && byte_at(b, i) != q { i = i + 1 }
+        if ke - ks == len(name) && starts_at(b, ks, name) {
+            a = vs
+            z = i
+            return
+        }
+        i = i + 1
+    }
+}
+
+func int_in(b, a, z) {
+    v := 0
+    i := a
+    while i < z { c := byte_at(b, i)  if c >= 48 && c <= 57 { v = v * 10 + c - 48 }  i = i + 1 }
+    return v
+}
+
+func utf8_of(cp) {
+    if cp < 128 { return bytes_str(from_hex(hexd(cp))) }
+    if cp < 2048 { return bytes_str(from_hex(hexd(192 + cp / 64) + hexd(128 + cp % 64))) }
+    if cp < 65536 { return bytes_str(from_hex(hexd(224 + cp / 4096) + hexd(128 + (cp / 64) % 64) + hexd(128 + cp % 64))) }
+    return bytes_str(from_hex(hexd(240 + cp / 262144) + hexd(128 + (cp / 4096) % 64) + hexd(128 + (cp / 64) % 64) + hexd(128 + cp % 64)))
+}
+
+func hexval(s) {
+    v := 0
+    i := 0
+    b := bytes(to_lower(s))
+    while i < len(b) { c := byte_at(b, i)  if c >= 97 { v = v * 16 + c - 87 } else { v = v * 16 + c - 48 }  i = i + 1 }
+    return v
+}
+
+func entities(s) (out) {
+    out = s
+    if index(s, "&") < 0 { return }
+    parts := split(s, "&")
+    acc := []string{parts[0]}
+    i := 1
+    while i < len(parts) {
+        p := parts[i]
+        semi := index(p, ";")
+        if semi < 0 { acc = append(acc, "&" + p)  i = i + 1  continue }
+        e := substr(p, 0, semi)
+        r := "&" + e + ";"
+        if e == "amp" { r = "&" } else if e == "lt" { r = "<" } else if e == "gt" { r = ">" } else if e == "quot" { r = "\"" } else if e == "apos" { r = "'" } else if has_prefix(e, "#x") { r = utf8_of(hexval(substr(e, 2, len(e)))) } else if has_prefix(e, "#") { r = utf8_of(parse_int(substr(e, 1, len(e)))) }
+        acc = append(acc, r + substr(p, semi + 1, len(p)))
+        i = i + 1
+    }
+    out = join(acc, "")
+}
+
+// character data between two tags: CDATA taken literally, the rest decoded
+func text_of(b, a, z) (out) {
+    s := str_of(b, a, z)
+    s = replace(replace(s, "\r\n", "\n"), "\r", "\n")
+    c := index(s, "<![CDATA[")
+    if c < 0 { out = entities(s)  return }
+    d := index(s, "]]>")
+    out = entities(substr(s, 0, c)) + substr(s, c + 9, d) + entities(substr(s, d + 3, len(s)))
+}
+
+// an attribute as a string — for the few tags (workbook, styles) that need one
+func attr(b, t, name) {
+    a, z := attr_span(b, t, bytes(name))
+    if a < 0 { return "" }
+    return entities(str_of(b, a, z))
+}
+
+// ---- shared strings and styles ----
+func shared_strings(b) (out) {
+    out = []string{}
+    pos := 0
+    cur := []string{}
+    parts := 0
+    one := ""
+    phon := false
+    open_t := -1
+    while true {
+        t := next_tag(b, pos)
+        if t.at < 0 { return }
+        pos = t.end_
+        if t.name == N_SI && !t.closing { parts = 0  one = ""  if t.empty { out = append(out, "") } }
+        if t.name == N_SI && t.closing { if parts > 1 { out = append(out, join(cur, "")) } else { out = append(out, one) } }
+        if t.name == N_RPH && !t.empty { phon = !t.closing }
+        if t.name == N_T && !phon {
+            if !t.closing && !t.empty { open_t = t.end_ }
+            if t.closing && open_t >= 0 {
+                piece := text_of(b, open_t, t.at)
+                // a list only for text in several runs: most strings have one
+                if parts == 0 { one = piece } else {
+                    if parts == 1 { cur = []string{one} }
+                    cur = append(cur, piece)
+                }
+                parts = parts + 1
+                open_t = -1
+            }
+        }
+    }
+}
+
+func is_date_format(id, code) {
+    if (id >= 14 && id <= 22) || (id >= 45 && id <= 47) { return true }
+    if code == "" || code == "General" { return false }
+    b := bytes(to_lower(code))
+    i := 0
+    while i < len(b) {
+        c := byte_at(b, i)
+        if c == 34 { i = i + 1  while i < len(b) && byte_at(b, i) != 34 { i = i + 1 } } else if c == 91 { while i < len(b) && byte_at(b, i) != 93 { i = i + 1 } } else if c == 92 { i = i + 1 } else if c == 121 || c == 100 || c == 104 || c == 109 || c == 115 { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// one bool per cell style: does it show a number as a date?
+func date_styles(b) (out) {
+    out = []bool{}
+    codes := make(map[string]string)
+    pos := 0
+    in_xfs := false
+    n_numfmt := name_code("numFmt")
+    n_xfs := name_code("cellXfs")
+    n_xf := name_code("xf")
+    while true {
+        t := next_tag(b, pos)
+        if t.at < 0 { return }
+        pos = t.end_
+        if t.name == n_numfmt && !t.closing { codes[attr(b, t, "numFmtId")] = attr(b, t, "formatCode") }
+        if t.name == n_xfs { in_xfs = !t.closing }
+        if in_xfs && t.name == n_xf && !t.closing {
+            id := attr(b, t, "numFmtId")
+            code := ""
+            if has(codes, id) { code = codes[id] }
+            out = append(out, is_date_format(parse_int(id), code))
+        }
+    }
+}
+
+// ---- references and formulas ----
+func col_num(letters) {
+    v := 0
+    i := 0
+    b := bytes(letters)
+    while i < len(b) { v = v * 26 + byte_at(b, i) - 64  i = i + 1 }
+    return v
+}
+func col_name(n) (s) {
+    s = ""
+    while n > 0 { s = substr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", (n - 1) % 26, (n - 1) % 26 + 1) + s  n = (n - 1) / 26 }
+}
+func split_ref(r) (c, row) {
+    b := bytes(r)
+    i := 0
+    while i < len(b) && byte_at(b, i) >= 65 { i = i + 1 }
+    c = col_num(substr(r, 0, i))
+    row = parse_int(substr(r, i, len(r)))
+}
+
+func is_upper(c) { return c >= 65 && c <= 90 }
+func is_digit(c) { return c >= 48 && c <= 57 }
+func is_word(c) { return is_upper(c) || is_digit(c) || (c >= 97 && c <= 122) || c == 95 || c == 46 }
+
+// move every relative reference in formula f by (dr rows, dc columns)
+func shift_formula(f, dr, dc) (out) {
+    b := bytes(f)
+    n := len(b)
+    parts := []string{}
+    from := 0
+    i := 0
+    while i < n {
+        c := byte_at(b, i)
+        if c == 34 || c == 39 { i = i + 1  while i < n && byte_at(b, i) != c { i = i + 1 }  i = i + 1  continue }
+        if (c == 36 || is_upper(c)) && (i == 0 || !is_word(byte_at(b, i - 1))) {
+            j := i
+            abs_c := false
+            abs_r := false
+            if byte_at(b, j) == 36 { abs_c = true  j = j + 1 }
+            ls := j
+            while j < n && is_upper(byte_at(b, j)) { j = j + 1 }
+            le_ := j
+            if j < n && byte_at(b, j) == 36 { abs_r = true  j = j + 1 }
+            ds := j
+            while j < n && is_digit(byte_at(b, j)) { j = j + 1 }
+            call := j < n && (byte_at(b, j) == 40 || byte_at(b, j) == 33 || is_word(byte_at(b, j)))
+            if le_ > ls && le_ - ls <= 3 && j > ds && !call {
+                col := col_num(str_of(b, ls, le_))
+                row := parse_int(str_of(b, ds, j))
+                if !abs_c { col = col + dc }
+                if !abs_r { row = row + dr }
+                r := col_name(col) + str(row)
+                if abs_r { r = col_name(col) + "$" + str(row) }
+                if abs_c { r = "$" + r }
+                parts = append(parts, str_of(b, from, i))
+                parts = append(parts, r)
+                from = j
+            }
+            if j > i { i = j  continue }
+        }
+        i = i + 1
+    }
+    parts = append(parts, str_of(b, from, n))
+    out = join(parts, "")
+}
+
+// ---- cells: numbers only, pointing into the sheet's XML ----
+var K_NUMBER = 0
+var K_SHARED = 1
+var K_INLINE = 2
+var K_STR = 3
+var K_BOOL = 4
+var K_ERR = 5
+
+type Cell struct {
+    row int
+    col int
+    at int
+    end_ int
+    style int
+    kind int
+    v_at int        // -1: no <v>
+    v_end int
+    f_at int        // formula text; f_end = f_at when the tag is empty
+    f_end int
+    shared int      // shared formula index, -1 when not shared
+    is_at int       // inline string: the <c> body
+}
+
+type Row struct { num int  at int  end_ int  close_at int  empty bool }
+
+// Cell records live in alloc() memory: a global slice would be copied through
+// JSON when assigned from a frame (javimosch/machin), several times its size.
+// Reading one returns a struct of numbers, which allocates nothing.
+var CELL_BYTES = 96
+
+func cell_put(mem, i, c) {
+    o := i * 96
+    poke_i64(mem, o, c.row)  poke_i64(mem, o + 8, c.col)  poke_i64(mem, o + 16, c.at)  poke_i64(mem, o + 24, c.end_)
+    poke_i64(mem, o + 32, c.style)  poke_i64(mem, o + 40, c.kind)  poke_i64(mem, o + 48, c.v_at)  poke_i64(mem, o + 56, c.v_end)
+    poke_i64(mem, o + 64, c.f_at)  poke_i64(mem, o + 72, c.f_end)  poke_i64(mem, o + 80, c.shared)  poke_i64(mem, o + 88, c.is_at)
+}
+
+func cell_at(s, i) {
+    o := i * 96
+    m := s.mem
+    return Cell{row: peek_i64(m, o), col: peek_i64(m, o + 8), at: peek_i64(m, o + 16), end_: peek_i64(m, o + 24),
+        style: peek_i64(m, o + 32), kind: peek_i64(m, o + 40), v_at: peek_i64(m, o + 48), v_end: peek_i64(m, o + 56),
+        f_at: peek_i64(m, o + 64), f_end: peek_i64(m, o + 72), shared: peek_i64(m, o + 80), is_at: peek_i64(m, o + 88)}
+}
+
+// allocates nothing: how many cells will the scan find?
+func count_cells(b) {
+    n := 0
+    pos := 0
+    while true {
+        t := next_tag(b, pos)
+        if t.at < 0 { return n }
+        pos = t.end_
+        if t.name == N_C && !t.closing { n = n + 1 }
+    }
+    return n
+}
+
+type Sheet struct {
+    mem int          // alloc()'d records; the owner calls free()
+    count int
+    rows []Row
+    data_at int
+    data_close int
+    data_empty bool
+    prefix string
+}
+
+func blank_cell() {
+    return Cell{row: 0, col: 0, at: 0, end_: 0, style: 0, kind: 0, v_at: -1, v_end: -1, f_at: 0, f_end: 0, shared: -1, is_at: -1}
+}
+
+func cell_ref_in(b, a, z) (col, row) {
+    col = 0
+    row = 0
+    i := a
+    while i < z { c := byte_at(b, i)  if c >= 65 && c <= 90 { col = col * 26 + c - 64 } else if c >= 48 && c <= 57 { row = row * 10 + c - 48 }  i = i + 1 }
+}
+
+func kind_in(b, a, z) {
+    if a < 0 { return K_NUMBER }
+    c := byte_at(b, a)
+    if c == 115 { if z - a == 1 { return K_SHARED }  return K_STR }
+    if c == 105 { return K_INLINE }
+    if c == 98 { return K_BOOL }
+    if c == 101 { return K_ERR }
+    return K_NUMBER
+}
+
+func scan_sheet(b) (s) {
+    total := count_cells(b)
+    mem := alloc(total * CELL_BYTES + 8)
+    count := 0
+    rows := []Row{}
+    data_at := -1
+    data_close := -1
+    data_empty := false
+    prefix := ""
+    pos := 0
+    cur := blank_cell()
+    row := Row{num: 0, at: 0, end_: 0, close_at: 0, empty: false}
+    in_c := false
+    v_mark := -1
+    while true {
+        t := next_tag(b, pos)
+        if t.at < 0 { break }
+        pos = t.end_
+        if t.name == N_SHEETDATA {
+            if !t.closing {
+                data_at = t.at
+                prefix = str_of(b, t.at + 1, t.name_at)
+                if t.empty { data_empty = true  data_close = t.end_ }
+            } else { data_close = t.at }
+        }
+        if t.name == N_ROW {
+            if !t.closing {
+                a, z := attr_span(b, t, A_R)
+                row = Row{num: int_in(b, a, z), at: t.at, end_: t.end_, close_at: -1, empty: t.empty}
+                if t.empty { rows = append(rows, row) }
+            } else {
+                row.close_at = t.at
+                row.end_ = t.end_
+                rows = append(rows, row)
+            }
+        }
+        if t.name == N_C {
+            if !t.closing {
+                cur = blank_cell()
+                a, z := attr_span(b, t, A_R)
+                cl, rw := cell_ref_in(b, a, z)
+                cur.col = cl
+                cur.row = rw
+                a2, z2 := attr_span(b, t, A_TT)
+                cur.kind = kind_in(b, a2, z2)
+                a3, z3 := attr_span(b, t, A_S)
+                if a3 >= 0 { cur.style = int_in(b, a3, z3) }
+                cur.at = t.at
+                cur.end_ = t.end_
+                cur.is_at = t.end_
+                if t.empty { cell_put(mem, count, cur)  count = count + 1 } else { in_c = true }
+            } else {
+                cur.end_ = t.end_
+                cell_put(mem, count, cur)
+                count = count + 1
+                in_c = false
+            }
+        }
+        if !in_c { continue }
+        if t.name == N_V {
+            if !t.closing {
+                cur.v_at = t.end_
+                cur.v_end = t.end_
+            } else { cur.v_end = t.at }
+        }
+        if t.name == N_F {
+            if !t.closing {
+                a4, z4 := attr_span(b, t, A_TT)
+                if a4 >= 0 && z4 - a4 == 6 && byte_at(b, a4) == 115 {
+                    a5, z5 := attr_span(b, t, A_SI)
+                    cur.shared = int_in(b, a5, z5)
+                }
+                cur.f_at = t.end_
+                cur.f_end = t.end_
+                if t.empty { v_mark = -2 }
+            } else { cur.f_end = t.at }
+        }
+    }
+    s = Sheet{mem: mem, count: count, rows: rows, data_at: data_at, data_close: data_close, data_empty: data_empty, prefix: prefix}
+}
+
+func has_formula(c) { return c.f_end > c.f_at || c.shared >= 0 }
+
+func ref_of(c) { return col_name(c.col) + str(c.row) }
+
+func value_text(b, c) {
+    if c.v_at < 0 { return "" }
+    return text_of(b, c.v_at, c.v_end)
+}
+
+func inline_text(b, c) {
+    out := []string{}
+    pos := c.is_at
+    phon := false
+    mark := -1
+    while true {
+        t := next_tag(b, pos)
+        if t.at < 0 || t.at >= c.end_ { break }
+        pos = t.end_
+        if t.name == N_RPH && !t.empty { phon = !t.closing }
+        if t.name == N_T && !phon {
+            if !t.closing { if !t.empty { mark = t.end_ } } else { out = append(out, text_of(b, mark, t.at)) }
+        }
+    }
+    return join(out, "")
+}
+
+// shared formulas: index of the master cell for each shared index
+func masters(s) (m) {
+    m = make(map[int]int)
+    i := 0
+    while i < s.count {
+        c := cell_at(s, i)
+        if c.shared >= 0 && c.f_end > c.f_at { m[c.shared] = i }
+        i = i + 1
+    }
+}
+
+func formula_of(b, s, m, i) {
+    c := cell_at(s, i)
+    if c.f_end > c.f_at { return text_of(b, c.f_at, c.f_end) }
+    if c.shared < 0 || !has(m, c.shared) { return "" }
+    mc := cell_at(s, m[c.shared])
+    return shift_formula(text_of(b, mc.f_at, mc.f_end), c.row - mc.row, c.col - mc.col)
+}
+
+// days since 1970-01-01 -> yyyy-mm-dd (civil calendar)
+func iso_date(days) {
+    z := days + 719468
+    era := z / 146097
+    doe := z - era * 146097
+    yoe := (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    y := yoe + era * 400
+    doy := doe - (365 * yoe + yoe / 4 - yoe / 100)
+    mp := (5 * doy + 2) / 153
+    d := doy - (153 * mp + 2) / 5 + 1
+    mo := mp + 3
+    if mp >= 10 { mo = mp - 9 }
+    if mo <= 2 { y = y + 1 }
+    ms := str(mo)  if mo < 10 { ms = "0" + ms }
+    ds := str(d)   if d < 10 { ds = "0" + ds }
+    return str(y) + "-" + ms + "-" + ds
+}
+
+// workbook.xml + its rels -> sheet names and entry paths, in order
+func sheet_list(es) (names, paths) {
+    names = []string{}
+    paths = []string{}
+    rel := es[entry_index(es, "xl/_rels/workbook.xml.rels")].data
+    target := make(map[string]string)
+    pos := 0
+    n_rel := name_code("Relationship")
+    while true {
+        t := next_tag(rel, pos)
+        if t.at < 0 { break }
+        pos = t.end_
+        if t.name == n_rel && !t.closing { target[attr(rel, t, "Id")] = attr(rel, t, "Target") }
+    }
+    wb := es[entry_index(es, "xl/workbook.xml")].data
+    pos = 0
+    n_sheet := name_code("sheet")
+    while true {
+        t := next_tag(wb, pos)
+        if t.at < 0 { return }
+        pos = t.end_
+        if t.name == n_sheet && !t.closing {
+            names = append(names, attr(wb, t, "name"))
+            id := attr(wb, t, "r:id")
+            p := target[id]
+            if has_prefix(p, "/") { p = substr(p, 1, len(p)) } else { p = "xl/" + p }
+            paths = append(paths, p)
+        }
+    }
+}
+
+func esc_out(s) {
+    if index(s, "\\") >= 0 { s = replace(s, "\\", "\\\\") }
+    if index(s, "\t") >= 0 { s = replace(s, "\t", "\\t") }
+    if index(s, "\n") >= 0 { s = replace(s, "\n", "\\n") }
+    return s
+}
+
+// ---- writing ----
+type Edit struct { ref string  op string  val string  col int  row int }
+
+func xml_escape(s) {
+    s = replace(replace(replace(s, "&", "&amp;"), "<", "&lt;"), ">", "&gt;")
+    return replace(replace(s, "\"", "&quot;"), "\r", "&#13;")
+}
+
+func cell_xml(p, ref, style, op, val) {
+    open := "<" + p + "c r=\"" + ref + "\""
+    if style != 0 { open = open + " s=\"" + str(style) + "\"" }
+    if op == "number" { return open + "><" + p + "v>" + val + "</" + p + "v></" + p + "c>" }
+    if op == "text" { return open + " t=\"inlineStr\"><" + p + "is><" + p + "t xml:space=\"preserve\">" + xml_escape(val) + "</" + p + "t></" + p + "is></" + p + "c>" }
+    if op == "formula" { return open + "><" + p + "f>" + xml_escape(val) + "</" + p + "f></" + p + "c>" }
+    return open + "/>"
+}
+
+// The output is a list of pieces joined once. Copying the whole sheet again for
+// every edit is what made 2,000 edits cost gigabytes.
+
+// first cell at or after (row, col); cells are in file order
+func lower_bound(s, row, col) {
+    lo := 0
+    hi := s.count
+    while lo < hi {
+        mid := (lo + hi) / 2
+        c := cell_at(s, mid)
+        if c.row < row || (c.row == row && c.col < col) { lo = mid + 1 } else { hi = mid }
+    }
+    return lo
+}
+
+func first_row_at_or_after(rows, num_) {
+    lo := 0
+    hi := len(rows)
+    while lo < hi {
+        mid := (lo + hi) / 2
+        if rows[mid].num < num_ { lo = mid + 1 } else { hi = mid }
+    }
+    return lo
+}
+
+type Splice struct { at int  end_ int  text string }
+
+func edit_before(a, b) { return a.row < b.row || (a.row == b.row && a.col <= b.col) }
+
+// merge sort by (row, column); equal cells keep their order
+func sort_edits(es) {
+    if len(es) < 2 { return es }
+    half := len(es) / 2
+    left := []Edit{}
+    right := []Edit{}
+    i := 0
+    while i < len(es) { if i < half { left = append(left, es[i]) } else { right = append(right, es[i]) }  i = i + 1 }
+    left = sort_edits(left)
+    right = sort_edits(right)
+    out := []Edit{}
+    a := 0
+    z := 0
+    while a < len(left) || z < len(right) {
+        if z >= len(right) || (a < len(left) && edit_before(left[a], right[z])) { out = append(out, left[a])  a = a + 1 } else { out = append(out, right[z])  z = z + 1 }
+    }
+    return out
+}
+
+// The pieces are built in one pass, so the edits must be in file order: they
+// are sorted here (unsorted ones were silently dropped). Of two edits to one
+// cell, the later wins.
+func edit_sheet(b, unsorted, drop) {
+    s := scan_sheet(b)
+    out := edit_scanned(b, s, unsorted, drop)
+    free(s.mem)
+    return out
+}
+
+// the same with a scan the caller already holds: an open app does not rescan
+func edit_scanned(b, s, unsorted, drop) {
+    sorted := sort_edits(unsorted)
+    edits := []Edit{}
+    d0 := 0
+    while d0 < len(sorted) {
+        if d0 + 1 >= len(sorted) || sorted[d0 + 1].row != sorted[d0].row || sorted[d0 + 1].col != sorted[d0].col { edits = append(edits, sorted[d0]) }
+        d0 = d0 + 1
+    }
+    m := masters(s)
+    p := s.prefix
+    sp := []Splice{}
+    edited := make(map[int]int)      // cell index -> edit
+    lost := make(map[int]int)        // shared index whose master is replaced
+    i := 0
+    while i < len(edits) {
+        k := lower_bound(s, edits[i].row, edits[i].col)
+        if k < s.count && cell_at(s, k).row == edits[i].row && cell_at(s, k).col == edits[i].col {
+            edited[k] = i
+            c := cell_at(s, k)
+            if c.shared >= 0 && has(m, c.shared) && m[c.shared] == k { lost[c.shared] = 1 }
+        }
+        i = i + 1
+    }
+    // a shared formula whose master is replaced: give each dependent its own copy
+    deps := []Splice{}
+    if len(lost) > 0 || drop {
+        i = 0
+        while i < s.count {
+            c := cell_at(s, i)
+            if !has(edited, i) {
+                if c.shared >= 0 && c.f_end == c.f_at && has(lost, c.shared) {
+                    deps = append(deps, Splice{at: c.at, end_: c.end_, text: cell_xml(p, ref_of(c), c.style, "formula", formula_of(b, s, m, i))})
+                } else if drop && has_formula(c) && c.v_at >= 0 {
+                    deps = append(deps, Splice{at: c.at, end_: c.end_, text: without_result(b, c, p)})
+                }
+            }
+            i = i + 1
+        }
+    }
+    i = 0
+    while i < len(edits) {
+        e := edits[i]
+        k := lower_bound(s, e.row, e.col)
+        if k < s.count && cell_at(s, k).row == e.row && cell_at(s, k).col == e.col {
+            c := cell_at(s, k)
+            sp = append(sp, Splice{at: c.at, end_: c.end_, text: cell_xml(p, e.ref, c.style, e.op, e.val)})
+            i = i + 1
+            continue
+        }
+        r := first_row_at_or_after(s.rows, e.row)
+        if r < len(s.rows) && s.rows[r].num == e.row {
+            rw := s.rows[r]
+            if rw.empty {
+                tg := str_of(b, rw.at, rw.end_ - 2)
+                inner := []string{}
+                while i < len(edits) && edits[i].row == rw.num { inner = append(inner, cell_xml(p, edits[i].ref, 0, edits[i].op, edits[i].val))  i = i + 1 }
+                sp = append(sp, Splice{at: rw.at, end_: rw.end_, text: tg + ">" + join(inner, "") + "</" + p + "row>"})
+                continue
+            }
+            at := rw.close_at
+            if k < s.count && cell_at(s, k).row == e.row { at = cell_at(s, k).at }
+            sp = append(sp, Splice{at: at, end_: at, text: cell_xml(p, e.ref, 0, e.op, e.val)})
+            i = i + 1
+            continue
+        }
+        // a new row: all its edits together, before the first later row
+        at := s.data_close
+        if r < len(s.rows) { at = s.rows[r].at }
+        rn := e.row
+        inner := []string{}
+        while i < len(edits) && edits[i].row == rn { inner = append(inner, cell_xml(p, edits[i].ref, 0, edits[i].op, edits[i].val))  i = i + 1 }
+        sp = append(sp, Splice{at: at, end_: at, text: "<" + p + "row r=\"" + str(rn) + "\">" + join(inner, "") + "</" + p + "row>"})
+    }
+    // merge the two lists, each already in file order
+    pieces := []string{}
+    last := 0
+    a := 0
+    d := 0
+    while a < len(sp) || d < len(deps) {
+        use_dep := a >= len(sp) || (d < len(deps) && deps[d].at < sp[a].at)
+        x := Splice{at: 0, end_: 0, text: ""}
+        if use_dep { x = deps[d]  d = d + 1 } else { x = sp[a]  a = a + 1 }
+        pieces = append(pieces, str_of(b, last, x.at))
+        pieces = append(pieces, x.text)
+        last = x.end_
+    }
+    pieces = append(pieces, str_of(b, last, len(b)))
+    return bytes(join(pieces, ""))
+}
+
+// A stored result may be stale after any edit, and LibreOffice shows stored
+// results as they are. A formula cell without one must be computed by whoever
+// opens the file.
+func without_result(b, c, prefix) {
+    cell := str_of(b, c.at, c.end_)
+    a := index(cell, "<" + prefix + "v")
+    if a < 0 { return cell }
+    tail := substr(cell, a, len(cell))
+    z := index(tail, "</" + prefix + "v>")
+    if z < 0 { return cell }
+    cell = substr(cell, 0, a) + substr(tail, z + len(prefix) + 4, len(tail))
+    cell = replace(replace(replace(cell, " t=\"str\"", ""), " t=\"e\"", ""), " t=\"b\"", "")
+    return replace(cell, " t=\"n\"", "")
+}
+
+// allocates nothing: is there a formula anywhere in this sheet?
+func any_formula(b) {
+    pos := 0
+    while true {
+        t := next_tag(b, pos)
+        if t.at < 0 { return false }
+        if t.name == N_F && !t.closing { return true }
+        pos = t.end_
+    }
+    return false
+}
+
+// ask the program that opens the file to recalculate every formula
+func force_recalc(wb) {
+    s := bytes_str(wb)
+    if index(s, "fullCalcOnLoad") >= 0 { return wb }
+    if index(s, "<calcPr") >= 0 { return bytes(replace(s, "<calcPr", "<calcPr fullCalcOnLoad=\"1\"")) }
+    return bytes(replace(s, "</workbook>", "<calcPr fullCalcOnLoad=\"1\"/></workbook>"))
+}
+
