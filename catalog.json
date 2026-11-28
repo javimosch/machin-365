@@ -43,6 +43,27 @@
      "sha256": "0c15a20a23a363c0b03aa3d09b824ee64dbe0228b539c4b52acbe2349cec8242"
     }
    ]
+  },
+  {
+   "id": "sheets",
+   "name": "Sheets",
+   "kind": "desktop",
+   "repo": "javimosch/machin-sheets",
+   "version": "0.1.0",
+   "bin": "machin-sheets",
+   "desc": "Lists and budgets saved as Excel or CSV files - early version",
+   "assets": [
+    {
+     "platform": "linux-amd64",
+     "url": "https://github.com/javimosch/machin-sheets/releases/download/v0.1.0/machin-sheets-linux-amd64",
+     "sha256": "44cafc9188828df0a44eea73e8d5ebbcae09ebbe44e503b6ae629feca71f2ded"
+    },
+    {
+     "platform": "linux-arm64",
+     "url": "https://github.com/javimosch/machin-sheets/releases/download/v0.1.0/machin-sheets-linux-arm64",
+     "sha256": "2a662fe175c4068e4e8ef0013a2a1b5e3144a80a6fca0829f9a4ca44eedf6eda"
+    }
+   ]
   }
  ]
 }
