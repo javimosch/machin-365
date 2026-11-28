@@ -75,6 +75,11 @@ Learned on this project; each cost a wrong release or a wrong report.
   until a test separates it from the other explanations.
 - Say what was not run (architecture, system, flow).
 
-## Release
+## Merging and releasing
 
-Merging, tagging and publishing need the owner's approval each time.
+Agreed 2026-11-28.
+
+- **Merging needs no confirmation.** Your own pull request: merge it once CI is
+  green (or the repository has none). Anyone else's, including another agent's:
+  review it quickly first.
+- **Tagging, releasing and deploying** need the owner's approval each time.
