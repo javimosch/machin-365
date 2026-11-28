@@ -70,17 +70,33 @@ func fetch_range(base, tok, ref, side, filt) (recs) {
                 // pending for this ref (sync_prov_gate, set by sync_one_ref):
                 // declaring an empty<->empty ref leaves a phantom collection
                 // on the server (#101). Gate 2 retries after the PUT; gate 1
-                // reports the ref absent instead of erroring; gate 0 means
-                // the local fetch already failed, so stay quiet here.
+                // never declares — a discovered ref gets the deny
+                // skip-message (#107) while an explicitly named data ref
+                // falls through to sync_note_err and fails the pass (#168);
+                // gate 0 means the local fetch already failed, so stay
+                // quiet here.
                 if sync_prov_gate == 2 {
                     if remote_provision(ref) { continue }
                 } else {
-                    // gate 1 + discovered: the remote administers this
-                    // ref privately — skip-message, not a typo hint (#107)
-                    if sync_prov_gate == 1 {
-                        if sync_discovered { sync_deny_ref(ref) } else { sync_note_absent(ref) }
+                    if sync_prov_gate == 1 && sync_discovered {
+                        // gate 1 + discovered: the remote administers this
+                        // ref privately — skip-message, not a typo hint (#107)
+                        sync_deny_ref(ref)
+                        quiet = true
+                    } else if sync_prov_gate == 0 || ref == sync_tomb_coll {
+                        // gate 0: the local fetch already reported its own
+                        // failure. sync/tombstones: undeclared is the normal
+                        // fresh-install state — infrastructure, not a ref
+                        // the user named — so it stays quiet.
+                        quiet = true
                     }
-                    quiet = true
+                    // Remaining case — gate 1 + an explicitly named data
+                    // ref: bkn answers the same 403 for undeclared and
+                    // admin-only collections, so "absent — check for typos"
+                    // was a guess that hid real access-policy denials behind
+                    // a clean exit 0 (#168). Explicit refs stay strict like
+                    // gate 2 and the write path (#107): quiet stays false so
+                    // the refusal reports as an ordinary remote failure.
                 }
             }
             if !quiet {

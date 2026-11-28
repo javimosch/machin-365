@@ -1,0 +1,249 @@
+// sync_denied_test.src — regression test for issue #168: an explicitly
+// named collection (--collections / sync_collections) that the remote
+// administers privately must not be reported as absent/"check for typos"
+// with a clean exit. bkn answers the same 403 "administered privately"
+// for undeclared and admin-only collections, so the honest report is the
+// server's refusal — and explicit refs stay strict (#107): the pass fails.
+// Discovered refs keep the fail-soft skip (#107).
+//
+// Two in-process fake bkn servers (local + remote); the remote answers
+// 403 privately for collection-level calls on m365/secret. Run via
+// test/run.sh.
+
+// --- fake bkn ----------------------------------------------------------------
+
+// fake_read accumulates one HTTP request: headers through CRLFCRLF, then
+// exactly Content-Length body bytes (read() returns arbitrary chunks).
+func fake_read(fd) (req) {
+    buf := ""
+    while index(buf, "\r\n\r\n") < 0 {
+        c := read(fd)
+        if c == "" { return "" }
+        buf = buf + c
+    }
+    he := index(buf, "\r\n\r\n")
+    head := substr(buf, 0, he)
+    lh := to_lower(head)
+    cl := 0
+    p := index(lh, "content-length:")
+    if p >= 0 {
+        i := p + 15
+        while i < len(lh) && substr(lh, i, i + 1) == " " { i = i + 1 }
+        n := 0
+        while i < len(lh) {
+            ch := substr(lh, i, i + 1)
+            if ch < "0" || ch > "9" { break }
+            n = n * 10 + parse_int(ch)
+            i = i + 1
+        }
+        cl = n
+    }
+    body := substr(buf, he + 4, len(buf))
+    while len(body) < cl {
+        c := read(fd)
+        if c == "" { break }
+        body = body + c
+    }
+    return head + "\r\n\r\n" + body
+}
+
+// st is one server's whole state: "n" mints ids, "d|<ref>|<id>" holds the
+// raw stored document, "denyref" names a collection that answers the
+// private-admin 403 on collection-level calls (record routes still work,
+// like bkn scoping by verb).
+func fake_list(st, ref) (out) {
+    out = "["
+    first := true
+    p := "d|" + ref + "|"
+    ks := keys(st)
+    i := 0
+    while i < len(ks) {
+        k := ks[i]
+        if has_prefix(k, p) {
+            if !first { out = out + "," }
+            first = false
+            out = out + st[k]
+        }
+        i = i + 1
+    }
+    return out + "]"
+}
+
+func fake_route(st, req) (resp) {
+    le := index(req, "\r\n")
+    line := substr(req, 0, le)
+    sp1 := index(line, " ")
+    rest := substr(line, sp1 + 1, len(line))
+    sp2 := index(rest, " ")
+    method := substr(line, 0, sp1)
+    path := substr(rest, 0, sp2)
+    q := index(path, "?")
+    if q >= 0 { path = substr(path, 0, q) }
+    he := index(req, "\r\n\r\n")
+    body := ""
+    if he >= 0 { body = substr(req, he + 4, len(req)) }
+    segs := []string{}
+    parts := split(path, "/")
+    i := 0
+    while i < len(parts) {
+        if parts[i] != "" { segs = append(segs, parts[i]) }
+        i = i + 1
+    }
+    status := "404 Not Found"
+    out := "{\"ok\":false,\"error\":{\"message\":\"no such route\",\"type\":\"not_found\"}}"
+    if len(segs) >= 4 && segs[0] == "v1" && segs[1] == "store" {
+        ref := segs[2] + "/" + segs[3]
+        denied := st["denyref"] != "" && ref == st["denyref"] && len(segs) == 4
+        if denied {
+            status = "403 Forbidden"
+            out = "{\"ok\":false,\"error\":{\"message\":" +
+                "\"this collection is administered privately\",\"type\":\"forbidden\"}}"
+        }
+        if !denied && method == "GET" && len(segs) == 4 {
+            status = "200 OK"
+            out = "{\"ok\":true,\"records\":" + fake_list(st, ref) + "}"
+        }
+        if !denied && method == "GET" && len(segs) >= 5 {
+            doc := st["d|" + ref + "|" + segs[4]]
+            if doc == "" {
+                status = "404 Not Found"
+                out = "{\"ok\":false,\"error\":{\"message\":\"record not found\",\"type\":\"not_found\"}}"
+            } else {
+                status = "200 OK"
+                out = "{\"ok\":true,\"record\":" + doc + "}"
+            }
+        }
+        if !denied && method == "POST" && len(segs) == 4 {
+            iv, ie := json_get(body, ".id")
+            id := ""
+            if ie == "" { id = parse(iv, "") }
+            if id == "" {
+                n := parse_int(st["n"]) + 1
+                st["n"] = str(n)
+                id = "id-" + str(n)
+                inner := substr(body, 1, len(body) - 1)
+                if trim(inner) == "" {
+                    body = "{\"id\":\"" + id + "\"}"
+                } else {
+                    body = substr(body, 0, len(body) - 1) + ",\"id\":\"" + id + "\"}"
+                }
+            }
+            st["d|" + ref + "|" + id] = body
+            status = "200 OK"
+            out = "{\"ok\":true,\"record\":" + body + "}"
+        }
+        if !denied && method == "DELETE" {
+            // A bare collection DELETE (no record id) answers 405 so sync's
+            // api_del_mode probe picks the record-path form, like the Go
+            // bkn; record deletes then arrive as /v1/store/<ns>/<coll>/<id>.
+            if len(segs) == 4 {
+                status = "405 Method Not Allowed"
+                out = "{\"ok\":false,\"error\":{\"message\":\"unsupported method\",\"type\":\"method_not_allowed\"}}"
+            } else {
+                k := "d|" + ref + "|" + segs[4]
+                if st[k] == "" {
+                    status = "404 Not Found"
+                    out = "{\"ok\":false,\"error\":{\"message\":\"record not found\",\"type\":\"not_found\"}}"
+                } else {
+                    delete(st, k)
+                    status = "200 OK"
+                    out = "{\"ok\":true,\"deleted\":\"" + segs[4] + "\"}"
+                }
+            }
+        }
+    }
+    return "HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nContent-Length: " +
+        str(len(out)) + "\r\nConnection: close\r\n\r\n" + out
+}
+
+// One accept loop per fake server; docs stay in this goroutine's map so the
+// two servers share no state. denyref is the collection-level 403 target
+// ("" = nothing denied). ready <- 1 once listen() has bound.
+func fake_bkn(port, ready, denyref) {
+    srv := listen(port)
+    if srv <= 0 { return }
+    ready <- 1
+    st := make(map[string]string)
+    st["n"] = "0"
+    st["denyref"] = denyref
+    while true {
+        c := accept(srv)
+        if c <= 0 { continue }
+        socket_timeout(c, 10000)
+        req := fake_read(c)
+        if req != "" { write(c, fake_route(st, req)) }
+        close(c)
+    }
+}
+
+// --- assertions ---------------------------------------------------------------
+
+// fake_field GETs one record's field, unquoted, via parse().
+func fake_field(base, ref, id, field) {
+    stt, body, err := http_request("GET",
+        base + "/v1/store/" + ref + "/" + id, []string{}, "")
+    if err != "" || stt != 200 { return "" }
+    v, e := json_get(body, ".record" + field)
+    if e != "" { return "" }
+    return parse(v, "")
+}
+
+// err_has reports whether any recorded pass error mentions both needles.
+func err_has(a, b) {
+    i := 0
+    while i < len(sync_err_msgs) {
+        if contains(sync_err_msgs[i], a) && contains(sync_err_msgs[i], b) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func main() {
+    ready := make(chan int)
+    go fake_bkn(18993, ready, "")
+    go fake_bkn(18994, ready, "m365/secret")
+    r1 := <-ready
+    r2 := <-ready
+    assert(r1 == 1 && r2 == 1, "both fake bkn servers listening")
+
+    sync_local = "http://127.0.0.1:18993"
+    sync_local_tok = "t"
+    sync_remote = "http://127.0.0.1:18994"
+    sync_remote_tok = "t"
+    // explicit refs — the --collections / sync_collections path (#168)
+    sync_discovered = false
+    refs := []string{"m365/tasks", "m365/secret"}
+
+    // seed one local tasks record so the good ref does real work
+    stt, body, err := http_request("POST", sync_local + "/v1/store/m365/tasks",
+        []string{"Content-Type: application/json"}, "{\"title\":\"ship it\"}")
+    assert(err == "" && stt == 200, "seed write reaches fake local")
+    tid := ""
+    iv, ie := json_get(body, ".record.id")
+    if ie == "" { tid = parse(iv, "") }
+    assert(tid != "", "seed write minted an id")
+
+    // 1. the regression: explicit denied ref must fail the pass with the
+    //    remote's real reason — not "absent (check for typos)", exit 0
+    sync_pass_once(refs)
+    assert(sync_err_count == 1, "denied explicit ref counts one failed call")
+    assert(err_has("m365/secret", "administered privately"),
+        "denial reported as administered privately")
+    assert(!err_has("m365/secret", "typo"),
+        "no typo hint for a denied explicit ref")
+    assert(!has_ref(sync_denied_refs, "m365/secret"),
+        "explicit denied ref is not soft-skipped like a discovered one")
+    assert_eq_str(fake_field(sync_remote, "m365/tasks", tid, ".title"),
+        "ship it", "unaffected ref still pushes to remote")
+
+    // 2. discovered refs keep the #107 fail-soft treatment
+    sync_discovered = true
+    sync_pass_once(refs)
+    assert(sync_err_count == 0, "discovered denied ref stays fail-soft")
+    assert(has_ref(sync_denied_refs, "m365/secret"),
+        "discovered denied ref marked skipped")
+
+    test_summary()
+}

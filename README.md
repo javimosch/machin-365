@@ -190,8 +190,10 @@ partial, pushes and pulls for that collection are skipped until a
 complete fetch succeeds — a record missing from a partial view is
 unseen, not absent, so reconciling on it would overwrite newer copies
 on the other side. The one exception is the private-admin refusal on
-an undeclared collection, which counts as confirmed-absent and keeps
-first-sync self-provisioning working. `service reset` clears
+an undeclared collection, which counts as confirmed-absent for
+auto-discovered refs and keeps first-sync self-provisioning working;
+a ref named explicitly via `--collections`/`sync_collections` fails
+the pass with the server's refusal instead of a silent skip. `service reset` clears
 every identity's manifest so a wiped store is restored from remote
 rather than deleted everywhere.
 

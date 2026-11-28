@@ -141,10 +141,8 @@ func sync_watch_identity_stop(fp, key) (stopped) {
 // full block or the dedup heartbeat. have_coll marks an explicit
 // --collections flag: it is persisted to config.sync_collections once, after
 // the first clean pass, so a transient outage cannot shrink the sticky set.
-// Refs the pass reported absent on both sides are left out of the persisted
-// set (#131); when every ref is absent nothing is written and a later pass
-// gets another chance — a ref that gains data or gets declared stops being
-// absent and persists then.
+// A ref the pass could not sync fails it, so the persisted set is always
+// one that synced clean (#131, #168).
 //
 // Returns 1 when the session identity changed underneath the watch (#148)
 // — the only way this loop ever exits besides a signal. The identity is
@@ -161,7 +159,6 @@ func sync_watch(refs, watch, have_coll) (code) {
     id_key := sync_expected_store_key()
     pass := 0
     persisted := false
-    absent_noted := false
     while true {
         if sync_watch_identity_stop(id_fp, id_key) { return 1 }
         pass = pass + 1
@@ -172,15 +169,8 @@ func sync_watch(refs, watch, have_coll) (code) {
         sync_watch_emit(pass)
         if sync_watch_identity_stop(id_fp, id_key) { return 1 }
         if have_coll && !persisted && sync_err_count == 0 && !sync_local_dead {
-            keep := persist_explicit_refs(refs)
-            if len(keep) > 0 {
-                persisted = true
-            } else if !absent_noted {
-                absent_noted = true
-                eprintln("machin-365: sync: every --collections ref is" +
-                    " absent on both sides — sync_collections not" +
-                    " updated; will persist once a ref exists")
-            }
+            persist_explicit_refs(refs)
+            persisted = true
         }
         sleep(watch * 1000)
     }
