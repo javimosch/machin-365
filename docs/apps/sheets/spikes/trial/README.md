@@ -1,10 +1,11 @@
 # Sheets window trial (throwaway)
 
-A grid with editing, paste, delete, undo, redo and save over the cell spike.
+A grid with editing, cut, copy, paste, clear, undo, redo, bold, number, euro and
+date formats, a total, find, a right-click menu and save, over the cell spike.
 **Not the app**: no formula engine, one sheet, no warning before closing, no
-file picker, no sort or find.
+file picker (so no New or Open), no sort.
 
-The app is the three source files here (`app.src`, `engine.src`, `app.conf`),
+The app is the source files here (`app.src`, `engine.src`, `styles.src`, `app.conf`),
 built with `mdk build <folder>` using a machin build that includes
 [#776](https://github.com/javimosch/machin/pull/776) and
 [#778](https://github.com/javimosch/machin/pull/778). It reads the file named
