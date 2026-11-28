@@ -28,19 +28,19 @@
    "name": "Chat",
    "kind": "desktop",
    "repo": "javimosch/machin-chat",
-   "version": "0.2.2",
+   "version": "0.2.3",
    "bin": "machin-chat",
    "desc": "Live room chat over machin-rooms (ws://) - dogfoods the plain-websocket client path",
    "assets": [
     {
      "platform": "linux-amd64",
-     "url": "https://github.com/javimosch/machin-chat/releases/download/v0.2.2/machin-chat-linux-amd64",
-     "sha256": "fcb615e4b324ae11bfcd739d9e886cb49754421f47d68cfdd0c1a63716db7ff6"
+     "url": "https://github.com/javimosch/machin-chat/releases/download/v0.2.3/machin-chat-linux-amd64",
+     "sha256": "cc2d07fcf97eae2d46d4c272f6acbf491493acc8c2febc0312a95d89e58c0e2c"
     },
     {
      "platform": "linux-arm64",
-     "url": "https://github.com/javimosch/machin-chat/releases/download/v0.2.2/machin-chat-linux-arm64",
-     "sha256": "fe08c3caedd70f84e537ae74851137c6ab63fcd60074a4e8697e115b49e7d54e"
+     "url": "https://github.com/javimosch/machin-chat/releases/download/v0.2.3/machin-chat-linux-arm64",
+     "sha256": "0c15a20a23a363c0b03aa3d09b824ee64dbe0228b539c4b52acbe2349cec8242"
     }
    ]
   }

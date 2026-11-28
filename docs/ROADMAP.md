@@ -16,8 +16,8 @@ because its `update` crashes too), and Tasks and Chat 0.2.2 start on 22.04 and
 
 | Item | Evidence |
 |---|---|
-| Chat 0.2.2 shows no incoming messages and joins as `anon-…`. A build of [machin-chat#9](https://github.com/javimosch/machin-chat/pull/9) showed them in the same test | reproduced on 22.04 |
-| The release startup check does not send a message, so it passed Chat 0.2.2 | from reading |
+| The chat message list stays on the oldest messages when many arrive | reproduced |
+| Chat release builds are not yet checked for the room and name they join with ([machin-chat#11](https://github.com/javimosch/machin-chat/pull/11)) | missing |
 | Copies with equal timestamps and different content are reported as the same ([#37](https://github.com/javimosch/machin-365/issues/37)). The open fix ([#63](https://github.com/javimosch/machin-365/pull/63)) picks a winner by content hash, so an older copy could overwrite a newer edit. Compare each copy with the last synced one instead, and keep both or report a conflict when both changed | difference: reported in #37; overwrite risk: from reading |
 | A refused collection is reported as a typo and sync exits successfully ([#168](https://github.com/javimosch/machin-365/issues/168), fix proposed in [#170](https://github.com/javimosch/machin-365/pull/170)) | reported in #168 |
 

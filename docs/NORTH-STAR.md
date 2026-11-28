@@ -35,8 +35,8 @@ but have not run them, so we don't claim them yet.
 | Extra commands | ❌ more than 0. Storage and apps are set up with `machin-365` commands, and the launcher is not released yet |
 | Task still there after reopening | ⬜ not measured from a clean install |
 | Data safety | ❌ copies with the same timestamp can stay different without any warning ([#37](https://github.com/javimosch/machin-365/issues/37)) |
-| Ubuntu 22.04 | 🟡 suite 0.4.2 installs mbkn 0.3.2 and Tasks and Chat 0.2.2. Tasks opened and showed stored tasks. Chat opens, but incoming messages do not appear |
-| Ubuntu 24.04 | 🟡 Tasks and Chat 0.2.2 pass a startup check with a virtual display; the whole first-use path has not been run, and the Chat message problem was seen on 22.04 only |
+| Ubuntu 22.04 | 🟡 Tasks 0.2.2 opened and showed stored tasks; Chat 0.2.3 showed incoming messages. The whole first-use path has not been run |
+| Ubuntu 24.04 | 🟡 Tasks 0.2.2 and Chat 0.2.3 pass startup checks with a virtual display; the whole first-use path has not been run |
 
 ## How to measure it
 
