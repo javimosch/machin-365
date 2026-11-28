@@ -1,20 +1,28 @@
-// DoR spike: read entries of a zip made by LibreOffice. Method 8 is raw
-// deflate; machin only offers zlib_decompress, so try wrapping it.
+// DoR spike: unpack a zip with bounded inflate and check each entry's CRC.
+// Throwaway: no zip64, no encryption, trusts nothing about sizes beyond the cap.
+var MAX_ENTRY = 134217728
+
 func le(b, o, n) {
     v := 0
     i := n - 1
     while i >= 0 { v = v * 256 + byte_at(b, o + i)  i = i - 1 }
     return v
 }
+
 func main() {
     z := read_file_bytes(env("IN"))
     e := len(z) - 22
     while e >= 0 && le(z, e, 4) != 101010256 { e = e - 1 }
+    if e < 0 { println("not a zip")  exit(2) }
     count := le(z, e + 10, 2)
     p := le(z, e + 16, 4)
+    t0 := now_ms()
+    bad := 0
+    total := 0
     i := 0
     while i < count {
         method := le(z, p + 10, 2)
+        want_crc := le(z, p + 16, 4)
         csize := le(z, p + 20, 4)
         usize := le(z, p + 24, 4)
         nl := le(z, p + 28, 2)
@@ -22,10 +30,17 @@ func main() {
         lo := le(z, p + 42, 4)
         start := lo + 30 + le(z, lo + 26, 2) + le(z, lo + 28, 2)
         raw := bytes_sub(z, start, start + csize)
-        out := zlib_decompress(bytes_concat(from_hex("789c"), raw))
-        println(name + " method=" + str(method) + " expected=" + str(usize) + " got=" + str(len(out)))
-        if name == "xl/worksheets/sheet1.xml" { println(substr(bytes_str(out), 0, 300)) }
+        out := raw
+        if method == 8 {
+            if usize > MAX_ENTRY { println("  refused (too large): " + name)  exit(3) }
+            out = deflate_decompress(raw, usize)
+        }
+        if len(out) != usize || crc32(out) != want_crc { println("  BAD " + name)  bad = bad + 1 }
+        total = total + len(out)
+        write_file_bytes(env("OUT") + "/" + str(i), out)
+        println("ENTRY " + str(i) + " " + name)
         p = p + 46 + nl + le(z, p + 30, 2) + le(z, p + 32, 2)
         i = i + 1
     }
+    println("SUMMARY entries=" + str(count) + " bytes=" + str(total) + " bad=" + str(bad) + " ms=" + str(now_ms() - t0))
 }
