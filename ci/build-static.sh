@@ -18,6 +18,11 @@ docker run --rm -v "$PWD:/src" -w /src -v "$machin:/usr/local/bin/machin:ro" \
             sqlite-dev sqlite-static zlib-dev zlib-static zstd-dev zstd-static
         git config --global --add safe.directory /src
         trap "chown -R $OWNER build src" EXIT
-        ./build.sh
+        # musl gives a new thread 128 KB of stack and every goroutine is a thread;
+        # give them the 8 MB a glibc build had. machin links through $CC.
+        printf "#!/bin/sh\nexec gcc \"\$@\" -Wl,-z,stack-size=8388608\n" > /usr/local/bin/cc-bigstack
+        chmod +x /usr/local/bin/cc-bigstack
+        CC=cc-bigstack ./build.sh
+        readelf -lW build/machin-365 | grep -q "GNU_STACK.*0x800000 " || { echo "thread stack size was not applied" >&2; exit 1; }
         strip build/machin-365
     '
