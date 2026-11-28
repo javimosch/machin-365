@@ -8,6 +8,10 @@ Every app is **offline-first** — it works fully on local data and syncs when a
 server is configured. The suite itself is a single small native binary written
 in [MFL](https://github.com/javimosch/machin).
 
+**Website:** <https://javimosch.github.io/machin-365/>
+
+Docs: [vision](docs/VISION.md) · [north star](docs/NORTH-STAR.md) · [roadmap](docs/ROADMAP.md).
+
 ## Install
 
 ```sh
@@ -239,12 +243,7 @@ overrides it — that is also the seam a server-hosted catalog will use.
 
 ## Roadmap
 
-- **Now**: CLI install/run/auth, local bkn lifecycle (`service *`),
-  LWW replication with delete tombstones + `sync --watch`, desktop apps
-  (tasks on local bkn, chat over ws://)
-- **Next**: sync daemon/autostart, chat message persistence, tenant
-  provisioning + quotas on the demo server, server-hosted catalog
-- **Later**: web/PWA app flavors, desktop launcher shell
+See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## License
 
