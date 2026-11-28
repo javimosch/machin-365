@@ -67,5 +67,5 @@ laptop.
 | Recalculate 20,000 formulas | under 100 ms | timed in a headless test |
 | CPU time per frame while scrolling | under 8 ms | the toolkit's `--bench` |
 | Key press or click to updated screen | median under 50 ms | simulated input, watching pixels |
-| Memory | under 300 MB | resident size after open and 5 minutes of use |
+| Memory | under 300 MB | resident size after open and 5 minutes of use. **To decide:** a separate limit for the peak while saving (the trial reaches about 400 MB) |
 | Forced close | the saved file is never damaged; at most 30 s of typing lost | kill the app repeatedly |
