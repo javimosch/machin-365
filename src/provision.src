@@ -25,16 +25,6 @@ var sync_provision_tried = []string{}
 // would leave a permanent phantom collection on the server (#101).
 var sync_prov_gate = 0
 
-// Refs already reported absent this process — a persisted typo would
-// otherwise print the warning on every --watch pass.
-var sync_absent_refs = []string{}
-
-// Refs reported absent during the CURRENT pass. Unlike the warn-once
-// list above this is rebuilt every pass, so the --collections persist
-// gate sees exactly what the last pass flagged as absent on both sides
-// (#131) — a ref absent once but live later must not stay excluded.
-var sync_absent_pass = []string{}
-
 // sync_prov_gate_for computes the read-path provisioning gate for one ref
 // from its just-fetched local records: 0 = the local fetch failed (its
 // error is already reported), 1 = clean fetch but nothing live to push,
@@ -55,22 +45,6 @@ func sync_prov_gate_for(ref, lr, tm, lok) (g) {
         k = k + 1
     }
     return
-}
-
-// One-line report for a ref that is refused on the remote read path while
-// the local side has nothing to push. Not a sync error: there is genuinely
-// nothing to move, and the collection is declared lazily on the first
-// actual POST (push_doc). sync/tombstones is exempt — it is infrastructure,
-// not a configured ref, and its absence is the normal fresh-install state.
-func sync_note_absent(ref) {
-    if ref == sync_tomb_coll { return }
-    if !has_ref(sync_absent_pass, ref) {
-        sync_absent_pass = append(sync_absent_pass, ref)
-    }
-    if has_ref(sync_absent_refs, ref) { return }
-    sync_absent_refs = append(sync_absent_refs, ref)
-    perr("machin-365: sync: " + ref + " absent on the remote and empty" +
-        " locally — nothing to sync (check for typos)")
 }
 
 // true when a failed store call is the undeclared/private-collection refusal

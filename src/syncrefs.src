@@ -147,50 +147,13 @@ func warn_orgless_session() {
 }
 
 // Write the sticky sync_collections set from an explicit --collections
-// list, minus the refs the last pass reported absent on the remote and
-// empty locally (sync_absent_pass). Persisting those would let one typo
-// replace the working sync set with refs that exist nowhere — every
-// later bare sync would replicate nothing while exiting 0 (#131).
-// Returns the refs kept; empty means nothing was persisted and
-// config.json is untouched. The all-absent case prints nothing here —
-// each caller reports it in its own voice (one-shot fails, --watch
-// waits for a later pass).
-func persist_explicit_refs(refs) (keep) {
-    keep = []string{}
-    absent := []string{}
-    i := 0
-    while i < len(refs) {
-        if has_ref(sync_absent_pass, refs[i]) {
-            absent = append(absent, refs[i])
-        } else {
-            keep = append(keep, refs[i])
-        }
-        i = i + 1
-    }
-    if len(keep) > 0 {
-        if len(absent) > 0 {
-            perr("machin-365: sync: --collections ref(s) absent on the" +
-                " remote and empty locally — not persisted: " +
-                join_strs(absent, ","))
-        }
-        persist_coll_arg(keep)
-    }
-    return
-}
-
-// One-shot `sync --collections` persist step: writes the sticky set minus
-// absent refs; when every explicit ref is absent, leaves config.json alone
-// and returns 1 so the run cannot pass for a healthy sync that replicated
-// nothing (#131).
-func persist_coll_flag(refs) (code) {
-    code = 0
-    if len(persist_explicit_refs(refs)) == 0 {
-        eprintln("machin-365: sync: every --collections ref is absent" +
-            " on the remote and empty locally — sync_collections" +
-            " left unchanged (check for typos)")
-        return 1
-    }
-    return code
+// list. Only reached after a pass that left sync_err_count at zero — a
+// ref the remote cannot serve fails the pass before this runs (#168),
+// so what persists is exactly what the user named. That is the #131
+// guarantee in stronger form: an absent or denied ref can never reach
+// config because its pass never reports clean.
+func persist_explicit_refs(refs) {
+    persist_coll_arg(refs)
 }
 
 // discover_refs returns the sync set plus whether it was auto-discovered

@@ -303,7 +303,6 @@ func sync_pass_once(refs) {
     sync_mtime_suspect = 0
     sync_remote_auth_err = false
     sync_provision_tried = []string{}
-    sync_absent_pass = []string{}
     sync_denied_refs = []string{}
     sync_scope_cache = make(map[string]string)
     if !local_alive() {
@@ -446,6 +445,6 @@ func cmd_sync(a) (code) {
     sync_pass(refs)
     sync_lock_release()
     if sync_local_dead || sync_err_count > 0 { return 1 }
-    if have_coll { return persist_coll_flag(refs) }
+    if have_coll { persist_explicit_refs(refs) }
     return code
 }
