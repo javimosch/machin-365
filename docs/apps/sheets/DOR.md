@@ -1,5 +1,9 @@
 # Sheets: Definition of Ready
 
+> Sheets 0.1.0 was released on 2026-11-28 at the owner's request with some of
+> these boxes still open. This page records the state before building; see the
+> [release status](DOD.md).
+
 **Not ready.** No app code yet. Rules: [app-delivery](../../../.agents/skills/app-delivery/SKILL.md).
 State on 2026-11-28.
 

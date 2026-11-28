@@ -21,7 +21,13 @@ machin-365 catalog                  # apps in the catalog + install state
 machin-365 install tasks            # release asset, or:
 machin-365 install tasks --bin ./build/machin-tasks   # local build
 machin-365 run tasks                # launch (also in your OS app menu)
+machin-365 install sheets           # lists and budgets (early version)
+machin-365 run sheets               # or: machin-365 run sheets file.xlsx
 ```
+
+Already installed? Update the suite (`machin-365 update`) so its app list
+includes Sheets. [Sheets](https://github.com/javimosch/machin-sheets) keeps its
+work in the files you save; it does not use the suite's storage or sync.
 
 Or build from source (needs `machin` on PATH):
 

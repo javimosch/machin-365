@@ -1,6 +1,6 @@
 # Sheets: brief
 
-**Status: proposal.** The mockup is approved (light by default, 2026-11-28); the user, tasks and scope below are not yet confirmed. [DOR.md](DOR.md) says what
+**Status: [0.1.0 released](DOD.md) as an early version. This brief is still a proposal.** The mockup is approved (light by default, 2026-11-28); the user, tasks and scope below are not yet confirmed. [DOR.md](DOR.md) says what
 is still missing before building starts. [Mockup](mockup.html)
 ([live](https://hart.intrane.fr/a/machin-365/sheets-mockup)).
 

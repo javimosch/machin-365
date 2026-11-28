@@ -64,7 +64,8 @@ footer{border-top:1px solid var(--line);padding-block:28px 40px;color:var(--mute
 
 <section id="apps">
   <h2>The apps</h2>
-  <div class="two">
+  <div class="three">
+    <div class="card"><img src="assets/sheets.svg" alt=""><h3>Sheets</h3><p>Lists and budgets that open and save Excel and CSV files. A new, early version: keep a copy of files that matter. It has not been tried with Microsoft Excel and cannot sort yet. <a href="https://github.com/javimosch/machin-sheets#readme">What it does and does not do</a>.</p></div>
     <div class="card"><img src="assets/tasks.svg" alt=""><h3>Tasks</h3><p>A to-do list. Add a task, tick it off, and find it again later. It works without an internet connection.</p></div>
     <div class="card"><img src="assets/chat.svg" alt=""><h3>Chat</h3><p>Live chat rooms. It needs a chat server that you or someone else runs, and the app does not save messages.</p></div>
   </div>
@@ -73,7 +74,7 @@ footer{border-top:1px solid var(--line);padding-block:28px 40px;color:var(--mute
 <section id="data">
   <h2>Where your data goes</h2>
   <div class="three">
-    <div class="card"><h3>On your computer</h3><p>Tasks saves to a small storage service that runs on your computer.</p></div>
+    <div class="card"><h3>On your computer</h3><p>Tasks saves to a small storage service that runs on your computer. Sheets saves ordinary files where you choose, and sync does not cover them.</p></div>
     <div class="card"><h3>Sync, if you choose</h3><p>Sign in to a server and a copy of your stored data goes there too. It is off until you set it up, which takes a terminal.</p></div>
     <div class="card"><h3>Usage counts</h3><p>On by default and anonymous: version, system type, command used and whether it failed. Never your tasks or messages. Turn them off with <code>machin-365 telemetry --off</code>.</p></div>
   </div>
@@ -89,6 +90,7 @@ machin-365 init
 machin-365 service install --latest
 machin-365 install tasks
 machin-365 run tasks</pre></div>
+  <p class="sub">For Sheets, also run <code>machin-365 install sheets</code>, then <code>machin-365 run sheets</code>.</p>
   <p class="sub">After this, Tasks is also in your app menu. Already on 0.4.0? Its <code>update</code> command crashes on Ubuntu 22.04, so run the first line again, then the <code>service install</code> line.</p>
 </section>
 
